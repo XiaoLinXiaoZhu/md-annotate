@@ -522,7 +522,7 @@ body {
   <script nonce="${nonce}" src="${mediaBase}/vendor/obsidian-app.patched.js"></script>
 
   <!-- webview 入口 -->
-  <script nonce="${nonce}" type="module" src="${mediaBase}/webview.js"></script>
+  <script nonce="${nonce}" src="${mediaBase}/webview.js"></script>
 
   <!-- 切回源码模式 -->
   <script nonce="${nonce}">
