@@ -600,7 +600,11 @@ async function initEditor(doc, filePath) {
 
   // 设置批注交互
   setupAnnotationInteraction(container);
-  console.log('[md-annotate] editor initialized successfully');
+  
+  // ─── [[ 链接补全 ───
+  setupLinkCompletion(editor.view);
+
+console.log('[md-annotate] editor initialized successfully');
   } catch(e) {
     console.error('[md-annotate] initEditor failed:', e);
     document.getElementById('editor-container').textContent = 'Editor init error: ' + e.message;
@@ -708,14 +712,14 @@ function renderAnnotationGutter() {
   gutter.innerHTML = allAnns
     .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
     .map(ann => `
-      <div class="annotation-card ${ann._authorType} ${ann.resolved ? 'resolved' : ''}">
+      <div class="annotation-card ${ann._authorType} ${ann.resolved ? 'resolved' : ''}" data-ann-id="${ann.id}" data-anchor='${JSON.stringify(ann.anchor)}'>
         <div class="card-header">
           <span>${ann._authorType === 'human' ? '👤' : '🤖'}</span>
           <span class="card-date">${formatDate(ann.created_at)}</span>
           ${ann._authorType === 'human' ? `
           <div class="card-actions">
-            <button onclick="resolveAnnotation('${ann.id}')" title="已解决">✓</button>
-            <button onclick="deleteAnnotation('${ann.id}')" title="删除">✕</button>
+            <button data-action="resolve" data-id="${ann.id}" title="已解决">✓</button>
+            <button data-action="delete" data-id="${ann.id}" title="删除">✕</button>
           </div>` : ''}
         </div>
         <div class="card-content">${escapeHtml(ann.content)}</div>
@@ -748,13 +752,201 @@ function escapeHtml(text) {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-// 全局函数（onclick 调用）
-window.resolveAnnotation = function (id) {
-  vscodeApi.postMessage({ type: 'resolveAnnotation', id });
-};
-window.deleteAnnotation = function (id) {
-  vscodeApi.postMessage({ type: 'removeAnnotation', id });
-};
+// 事件代理：gutter 上的点击操作
+(function setupGutterEvents() {
+  var gutter = document.getElementById('annotation-gutter');
+  if (!gutter) return;
+  gutter.addEventListener('click', function(e) {
+    var btn = e.target.closest('button[data-action]');
+    if (btn) {
+      e.stopPropagation();
+      var action = btn.getAttribute('data-action');
+      var id = btn.getAttribute('data-id');
+      if (action === 'resolve') {
+        vscodeApi.postMessage({ type: 'resolveAnnotation', id: id });
+      } else if (action === 'delete') {
+        vscodeApi.postMessage({ type: 'removeAnnotation', id: id });
+      }
+      return;
+    }
+    // 点击卡片跳转到对应位置
+    var card = e.target.closest('.annotation-card[data-anchor]');
+    if (card && editor) {
+      try {
+        var anchor = JSON.parse(card.getAttribute('data-anchor'));
+        jumpToAnchor(anchor);
+      } catch(err) {
+        console.warn('[md-annotate] jump failed:', err);
+      }
+    }
+  });
+})();
+
+function jumpToAnchor(anchor) {
+  if (!editor || !editor.view) return;
+  var view = editor.view;
+  var doc = view.state.doc.toString();
+  var pos = -1;
+
+  if (anchor.type === 'text-range' && anchor.start_text) {
+    pos = doc.indexOf(anchor.start_text);
+  } else if (anchor.type === 'heading' && anchor.heading_text) {
+    pos = doc.indexOf(anchor.heading_text);
+  } else if (anchor.type === 'line-range' && anchor.start_line) {
+    var line = Math.min(anchor.start_line, view.state.doc.lines);
+    pos = view.state.doc.line(line).from;
+  }
+
+  if (pos >= 0) {
+    view.dispatch({
+      selection: { anchor: pos },
+      scrollIntoView: true,
+    });
+    view.focus();
+  }
+}
+
+
+// ─── [[ 链接自动补全 ───
+function setupLinkCompletion(view) {
+  var ViewPlugin = window.__cm6.ViewPlugin;
+  var EditorView = window.__cm6.EditorView;
+
+  var suggestEl = null;
+  var suggestItems = [];
+  var selectedIdx = 0;
+  var triggerPos = -1;
+
+  function createSuggestEl() {
+    if (suggestEl) return suggestEl;
+    suggestEl = document.createElement('div');
+    suggestEl.className = 'link-suggest';
+    suggestEl.style.cssText = 'position:fixed;z-index:1000;background:var(--vscode-editorSuggestWidget-background,#252526);border:1px solid var(--vscode-editorSuggestWidget-border,#454545);border-radius:4px;max-height:200px;overflow-y:auto;min-width:200px;box-shadow:0 2px 8px rgba(0,0,0,0.3);font-size:13px;display:none;';
+    document.body.appendChild(suggestEl);
+    return suggestEl;
+  }
+
+  function showSuggest(coords, items) {
+    var el = createSuggestEl();
+    suggestItems = items;
+    selectedIdx = 0;
+    el.innerHTML = items.map(function(item, i) {
+      return '<div class="link-suggest-item' + (i === 0 ? ' selected' : '') + '" data-idx="' + i + '" style="padding:4px 8px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escapeHtml(item.path) + '</div>';
+    }).join('');
+    el.style.left = coords.left + 'px';
+    el.style.top = (coords.bottom + 2) + 'px';
+    el.style.display = 'block';
+
+    // 点击选择
+    el.onclick = function(e) {
+      var itemEl = e.target.closest('.link-suggest-item');
+      if (itemEl) {
+        var idx = parseInt(itemEl.getAttribute('data-idx'));
+        acceptSuggestion(view, idx);
+      }
+    };
+  }
+
+  function hideSuggest() {
+    if (suggestEl) suggestEl.style.display = 'none';
+    suggestItems = [];
+    triggerPos = -1;
+  }
+
+  function updateSelection(idx) {
+    if (!suggestEl) return;
+    selectedIdx = Math.max(0, Math.min(idx, suggestItems.length - 1));
+    var items = suggestEl.querySelectorAll('.link-suggest-item');
+    items.forEach(function(el, i) {
+      el.style.background = i === selectedIdx ? 'var(--vscode-list-activeSelectionBackground, #04395e)' : '';
+      el.style.color = i === selectedIdx ? 'var(--vscode-list-activeSelectionForeground, #fff)' : '';
+    });
+    if (items[selectedIdx]) items[selectedIdx].scrollIntoView({ block: 'nearest' });
+  }
+
+  function acceptSuggestion(view, idx) {
+    if (idx < 0 || idx >= suggestItems.length) return;
+    var item = suggestItems[idx];
+    // 替换从 [[ 之后到光标位置的文本，插入 path]]
+    var cursor = view.state.selection.main.head;
+    var insertText = item.path + ']]';
+    view.dispatch({
+      changes: { from: triggerPos + 2, to: cursor, insert: insertText },
+      selection: { anchor: triggerPos + 2 + insertText.length },
+    });
+    hideSuggest();
+    view.focus();
+  }
+
+  // 注册 ViewPlugin 监听文档变更
+  var linkSuggestPlugin = ViewPlugin.define(function(view) {
+    return {
+      update: function(update) {
+        if (!update.docChanged && !update.selectionSet) return;
+        var state = update.state;
+        var cursor = state.selection.main.head;
+        var line = state.doc.lineAt(cursor);
+        var textBefore = line.text.slice(0, cursor - line.from);
+
+        // 检查是否在 [[ 之后且没有 ]]
+        var bracketIdx = textBefore.lastIndexOf('[[');
+        if (bracketIdx === -1 || textBefore.indexOf(']]', bracketIdx) !== -1) {
+          hideSuggest();
+          return;
+        }
+
+        // 获取查询文本
+        var query = textBefore.slice(bracketIdx + 2).toLowerCase();
+        triggerPos = line.from + bracketIdx;
+
+        // 过滤匹配项
+        var filtered = [];
+        linkIndex.forEach(function(path, name) {
+          if (name.toLowerCase().includes(query) || path.toLowerCase().includes(query)) {
+            // 去重（同一个 path 只出现一次）
+            if (!filtered.some(function(f) { return f.path === path; })) {
+              filtered.push({ name: name, path: path });
+            }
+          }
+        });
+        filtered = filtered.slice(0, 20); // 最多 20 项
+
+        if (filtered.length === 0) {
+          hideSuggest();
+          return;
+        }
+
+        // 获取光标坐标
+        var coords = update.view.coordsAtPos(cursor);
+        if (coords) {
+          showSuggest(coords, filtered);
+        }
+      },
+    };
+  });
+
+  // 添加 plugin 到编辑器
+  view.dispatch({
+    effects: window.__cm6.StateEffect.appendConfig.of(linkSuggestPlugin),
+  });
+
+  // 键盘事件处理（上下选择、回车确认、Esc关闭）
+  view.dom.addEventListener('keydown', function(e) {
+    if (!suggestEl || suggestEl.style.display === 'none') return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      updateSelection(selectedIdx + 1);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      updateSelection(selectedIdx - 1);
+    } else if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      acceptSuggestion(view, selectedIdx);
+    } else if (e.key === 'Escape') {
+      hideSuggest();
+    }
+  });
+}
 
 // 切回源码模式
 window.addEventListener('switchToSource', () => {
