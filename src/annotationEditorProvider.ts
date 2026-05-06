@@ -174,6 +174,14 @@ export class AnnotationEditorProvider implements vscode.CustomTextEditorProvider
           break;
         }
 
+        case "openExternal": {
+          if (params.url) {
+            vscode.env.openExternal(vscode.Uri.parse(params.url));
+          }
+          result = null;
+          break;
+        }
+
         default:
           throw new Error(`Unknown RPC method: ${method}`);
       }

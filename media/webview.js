@@ -184,6 +184,7 @@ function buildMockApp(be, opts) {
         },
         workspace: {
             openLinkText(link) { be.openFile(link); },
+            getLeaf() { return { openLinkText(link) { be.openFile(link); } }; },
             getActiveFile() { return null; },
             activeEditor: null,
             on() { return { id: 0 }; },
@@ -603,6 +604,9 @@ async function initEditor(doc, filePath) {
   
   // ─── [[ 链接补全 ───
   setupLinkCompletion(editor.view);
+  // ─── 链接点击处理 ───
+  setupLinkClick(editor.view);
+
 
 console.log('[md-annotate] editor initialized successfully');
   } catch(e) {
@@ -806,6 +810,95 @@ function jumpToAnchor(anchor) {
   }
 }
 
+
+// ─── 链接点击处理 ───
+function setupLinkClick(view) {
+  view.dom.addEventListener('click', function(e) {
+    var target = e.target;
+    if (!target || !target.closest) return;
+
+    // 内部链接：[[link]] — 渲染后有 .cm-hmd-internal-link 和 .internal-link class
+    var internalLink = target.closest('.internal-link, .cm-hmd-internal-link');
+    if (internalLink) {
+      e.preventDefault();
+      e.stopPropagation();
+      var linkText = internalLink.getAttribute('data-href') 
+        || internalLink.getAttribute('href')
+        || internalLink.textContent.trim();
+      if (linkText) {
+        console.log('[md-annotate] internal link clicked:', linkText);
+        backend.openFile(linkText);
+      }
+      return;
+    }
+
+    // 外部链接：[text](url) — 渲染后有 .external-link 或 a[href]
+    var externalLink = target.closest('.external-link, a.cm-underline[href], .cm-url');
+    if (externalLink) {
+      var href = externalLink.getAttribute('href') || externalLink.getAttribute('data-href');
+      if (!href) {
+        // 尝试从 .cm-url 中提取
+        href = externalLink.textContent.trim();
+      }
+      if (href && (href.startsWith('http://') || href.startsWith('https://') || href.startsWith('mailto:'))) {
+        e.preventDefault();
+        e.stopPropagation();
+        console.log('[md-annotate] external link clicked:', href);
+        vscodeApi.postMessage({ type: 'rpc', id: 0, method: 'openExternal', params: { url: href } });
+        return;
+      }
+    }
+
+    // Fallback: 检查点击的是否是带下划线的链接文本
+    var underline = target.closest('.cm-underline');
+    if (underline) {
+      var linkParent = underline.closest('.cm-hmd-internal-link');
+      if (linkParent) {
+        e.preventDefault();
+        e.stopPropagation();
+        // 从 CM6 syntax tree 获取链接文本
+        var pos = view.posAtDOM(underline);
+        var linkContent = extractLinkAtPos(view, pos);
+        if (linkContent) {
+          console.log('[md-annotate] link extracted at pos:', linkContent);
+          backend.openFile(linkContent);
+        }
+        return;
+      }
+      // 外部链接的下划线
+      var extParent = underline.closest('.cm-link');
+      if (extParent) {
+        var urlEl = extParent.parentElement && extParent.parentElement.querySelector('.cm-url, .cm-string');
+        if (urlEl) {
+          var url = urlEl.textContent.replace(/^\(|\)$/g, '');
+          if (url.startsWith('http://') || url.startsWith('https://')) {
+            e.preventDefault();
+            e.stopPropagation();
+            vscodeApi.postMessage({ type: 'rpc', id: 0, method: 'openExternal', params: { url: url } });
+            return;
+          }
+        }
+      }
+    }
+  });
+}
+
+function extractLinkAtPos(view, pos) {
+  // 在文档中找到 pos 附近的 [[ ... ]] 或 [text](url) 
+  var doc = view.state.doc.toString();
+  // 找 [[ 开始
+  var before = doc.lastIndexOf('[[', pos);
+  if (before !== -1 && before >= pos - 200) {
+    var after = doc.indexOf(']]', before + 2);
+    if (after !== -1 && after < pos + 200) {
+      var content = doc.slice(before + 2, after);
+      // 处理 [[path|alias]] 格式
+      var pipeIdx = content.indexOf('|');
+      return pipeIdx !== -1 ? content.slice(0, pipeIdx) : content;
+    }
+  }
+  return null;
+}
 
 // ─── [[ 链接自动补全 ───
 function setupLinkCompletion(view) {
