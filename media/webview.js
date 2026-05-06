@@ -596,8 +596,7 @@ async function initEditor(doc, filePath) {
     },
   }, backend);
 
-  // 初始化完成后请求批注数据
-  vscodeApi.postMessage({ type: 'ready' });
+  // ready 消息已移动到文件末尾，避免 init 死锁
 
   // 设置批注交互
   setupAnnotationInteraction(container);
@@ -761,6 +760,10 @@ window.deleteAnnotation = function (id) {
 window.addEventListener('switchToSource', () => {
   vscodeApi.postMessage({ type: 'switchToSource' });
 });
+
+// 脚本加载完毕，通知 extension 可以发送 init 数据了
+vscodeApi.postMessage({ type: 'ready' });
+console.log('[md-annotate] ready message sent to extension');
 
 
 })();
