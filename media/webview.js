@@ -983,16 +983,15 @@ function setupLinkCompletion(view) {
         var line = state.doc.lineAt(cursor);
         var textBefore = line.text.slice(0, cursor - line.from);
 
-        // 检查是否在 [[ 之后且没有 ]]
+        // 使用 Obsidian 的触发逻辑：[[ 存在，且最后一个 ] 在 [[ 之前
         var bracketIdx = textBefore.lastIndexOf('[[');
-        if (bracketIdx !== -1) console.log('[md-annotate] [[ detected at', bracketIdx, 'query:', textBefore.slice(bracketIdx + 2), 'linkIndex size:', linkIndex.size);
-        if (bracketIdx === -1 || textBefore.indexOf(']]', bracketIdx) !== -1) {
+        var lastClose = textBefore.lastIndexOf(']');
+        if (bracketIdx === -1 || lastClose > bracketIdx) {
           hideSuggest();
           return;
         }
-
-        // 获取查询文本
         var query = textBefore.slice(bracketIdx + 2).toLowerCase();
+        console.log('[md-annotate] [[ triggered, query:', query, 'linkIndex size:', linkIndex.size);
         triggerPos = line.from + bracketIdx;
 
         // 过滤匹配项
@@ -1015,10 +1014,29 @@ function setupLinkCompletion(view) {
 
         // 获取光标坐标
         var coords = update.view.coordsAtPos(cursor);
-        if (coords) {
-          console.log('[md-annotate] showing suggest, items:', filtered.length, 'coords:', coords);
-          showSuggest(coords, filtered);
+        if (!coords) {
+          // fallback: 尝试从 cursor DOM 元素或 selection rect 获取位置
+          var sel = window.getSelection();
+          if (sel && sel.rangeCount > 0) {
+            var range = sel.getRangeAt(0);
+            var rect = range.getBoundingClientRect();
+            if (rect.width > 0 || rect.height > 0) {
+              coords = { left: rect.left, bottom: rect.bottom };
+            }
+          }
+          if (!coords) {
+            var cursorEl = update.view.dom.querySelector('.cm-cursor');
+            if (cursorEl) {
+              var cursorRect = cursorEl.getBoundingClientRect();
+              coords = { left: cursorRect.left, bottom: cursorRect.bottom };
+            } else {
+              var domRect = update.view.dom.getBoundingClientRect();
+              coords = { left: domRect.left + 50, bottom: domRect.top + 30 };
+            }
+          }
         }
+        console.log('[md-annotate] showing suggest, items:', filtered.length, 'coords:', coords);
+        showSuggest(coords, filtered);
       },
     };
   });
