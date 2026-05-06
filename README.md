@@ -14,14 +14,30 @@
 
 ## 安装
 
-1. 克隆仓库
-2. `bun install`（或 `npm install`）
-3. 按 F5 在 Extension Development Host 中运行
+### 从 VSIX 安装（推荐）
 
-打包为 vsix：
+1. 下载 `.vsix` 文件（见 Releases 或自行打包）
+2. VSCode 中：扩展面板 → `...` → "从 VSIX 安装"
+
+### 从源码开发
+
 ```bash
-npx vsce package
+git clone https://github.com/XiaoLinXiaoZhu/md-annotate
+cd md-annotate
+bun install
+bun run compile
 ```
+
+按 F5 在 Extension Development Host 中运行。
+
+### 打包
+
+```bash
+bun run compile
+npx @vscode/vsce package --no-dependencies
+```
+
+生成 `md-annotate-x.x.x.vsix`，可分发给他人安装。
 
 ## 使用
 

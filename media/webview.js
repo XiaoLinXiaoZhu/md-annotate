@@ -1049,6 +1049,9 @@ function escapeHtmlLocal(text) {
 window.addEventListener('switchToSource', function() {
   vscodeApi.postMessage({ type: 'switchToSource' });
 });
+window.addEventListener('createAiFile', function() {
+  vscodeApi.postMessage({ type: 'createAiFile' });
+});
 
 // ─── 通知 extension 准备就绪 ───
 vscodeApi.postMessage({ type: 'ready' });

@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import * as path from "path";
+import * as fs from "fs";
 import { AnnotationStore } from "./annotationStore";
 
 /**
@@ -49,7 +50,11 @@ export class AnnotationEditorProvider implements vscode.CustomTextEditorProvider
     // 预加载链接目标
     const linkTargets = await this.getLinkTargets();
 
-    webview.html = this.getHtml(webview, mediaUri.toString());
+    // 检查 AI 批注文件是否存在
+    const aiMetaPath = this.store.getMetadataPath(document.uri, "ai");
+    const aiFileExists = fs.existsSync(aiMetaPath);
+
+    webview.html = this.getHtml(webview, mediaUri.toString(), aiFileExists);
 
     // ─── 消息处理 ───
     const messageHandler = webview.onDidReceiveMessage(async (msg) => {
@@ -107,6 +112,23 @@ export class AnnotationEditorProvider implements vscode.CustomTextEditorProvider
         // ─── RPC 后端调用 ───
         case "rpc": {
           await this.handleRpc(webview, document, msg);
+          break;
+        }
+
+        case "createAiFile": {
+          const aiPath = this.store.getMetadataPath(document.uri, "ai");
+          const dir = path.dirname(aiPath);
+          if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+          if (!fs.existsSync(aiPath)) {
+            const initial = {
+              version: "1.0",
+              source: path.basename(document.uri.fsPath),
+              author_type: "ai",
+              annotations: [],
+            };
+            fs.writeFileSync(aiPath, JSON.stringify(initial, null, 2), "utf-8");
+          }
+          vscode.window.showInformationMessage(`AI 批注文件已创建: ${path.basename(aiPath)}`);
           break;
         }
 
@@ -199,12 +221,44 @@ export class AnnotationEditorProvider implements vscode.CustomTextEditorProvider
   // ─── 后端实现 ───
 
   private async getLinkTargets(): Promise<{ path: string; name: string; aliases: string[] }[]> {
-    const files = await vscode.workspace.findFiles("**/*.md", "**/node_modules/**", 5000);
+    // 构建排除模式：node_modules + .gitignore 中的目录
+    const excludePattern = await this.buildExcludePattern();
+    const files = await vscode.workspace.findFiles("**/*.md", excludePattern, 5000);
     return files.map((uri) => {
       const rel = vscode.workspace.asRelativePath(uri);
       const name = path.basename(rel, ".md");
       return { path: rel, name, aliases: [] };
     });
+  }
+
+  private async buildExcludePattern(): Promise<string> {
+    const excludes = ["**/node_modules/**"];
+    // 读取 workspace 根目录的 .gitignore
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (workspaceFolders) {
+      for (const folder of workspaceFolders) {
+        const gitignorePath = vscode.Uri.joinPath(folder.uri, ".gitignore");
+        try {
+          const content = await vscode.workspace.fs.readFile(gitignorePath);
+          const text = Buffer.from(content).toString("utf-8");
+          for (const line of text.split("\n")) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith("#")) continue;
+            // 将 gitignore 模式转为 glob exclude
+            let pattern = trimmed;
+            if (pattern.startsWith("/")) pattern = pattern.slice(1);
+            if (pattern.endsWith("/")) pattern = "**/" + pattern + "**";
+            else if (!pattern.includes("/")) pattern = "**/" + pattern + "/**";
+            else pattern = "**/" + pattern;
+            // 避免重复
+            if (!excludes.includes(pattern)) excludes.push(pattern);
+          }
+        } catch {
+          // .gitignore 不存在，忽略
+        }
+      }
+    }
+    return "{" + excludes.join(",") + "}";
   }
 
   private async resolveLinkPath(
@@ -345,7 +399,7 @@ export class AnnotationEditorProvider implements vscode.CustomTextEditorProvider
 
   // ─── HTML 生成 ───
 
-  private getHtml(webview: vscode.Webview, mediaBase: string): string {
+  private getHtml(webview: vscode.Webview, mediaBase: string, aiFileExists: boolean): string {
     const nonce = getNonce();
 
     return `<!DOCTYPE html>
@@ -506,6 +560,7 @@ body {
 <body class="theme-dark">
   <div class="toolbar">
     <span class="title">📝 批注模式</span>
+    ${!aiFileExists ? '<button id="btn-create-ai-file" title="创建 AI 批注文件，方便 AI agent 对此文档进行标注">🤖 创建 AI 批注</button>' : ''}
     <span class="spacer"></span>
     <button id="btn-back-to-source">← 源码模式</button>
   </div>
@@ -532,11 +587,17 @@ body {
   <!-- webview 入口 -->
   <script nonce="${nonce}" src="${mediaBase}/webview.js"></script>
 
-  <!-- 切回源码模式 -->
+  <!-- 工具栏按钮事件 -->
   <script nonce="${nonce}">
     document.getElementById('btn-back-to-source').addEventListener('click', () => {
       window.dispatchEvent(new CustomEvent('switchToSource'));
     });
+    var aiBtn = document.getElementById('btn-create-ai-file');
+    if (aiBtn) {
+      aiBtn.addEventListener('click', () => {
+        window.dispatchEvent(new CustomEvent('createAiFile'));
+      });
+    }
   </script>
 </body>
 </html>`;

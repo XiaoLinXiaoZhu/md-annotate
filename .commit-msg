@@ -1,0 +1,16 @@
+feat: gitignore-aware completion, AI file creation button, packaging support
+
+-3: Add toolbar button "🤖 创建 AI 批注" that appears when the current
+    markdown file has no .ai-annotations.json. Clicking it creates the
+    file with initial structure, enabling AI agents to annotate.
+
+-2: Link completion now respects .gitignore — reads workspace root's
+    .gitignore and converts patterns to exclude globs for findFiles,
+    preventing scanning of build artifacts, dependencies, etc.
+
+-1: Add packaging support:
+    - .vscodeignore to exclude source/dev files from VSIX
+    - @vscode/vsce devDependency + "package" script
+    - LICENSE (MIT)
+    - Updated README with install/packaging instructions
+    - Verified: produces 2.24MB VSIX with 62 files
