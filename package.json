@@ -2,24 +2,41 @@
   "name": "md-annotate",
   "displayName": "MD Annotate",
   "description": "Non-invasive markdown annotation system — add comments and notes via companion metadata files without modifying the original markdown.",
-  "version": "0.2.0",
-  "publisher": "md-annotate",
+  "version": "1.0.0",
+  "publisher": "XiaoLinXiaoZhu",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/XiaoLinXiaoZhu/md-annotate"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": [
-    "Other"
-  ],
-  "activationEvents": [
-    "onLanguage:markdown"
-  ],
+  "categories": ["Other"],
+  "activationEvents": ["onLanguage:markdown"],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
         "command": "mdAnnotate.openAnnotationView",
-        "title": "批注模式",
-        "icon": "$(comment-discussion)"
+        "title": "打开批注模式",
+        "icon": "$(comment-discussion)",
+        "category": "MD Annotate"
+      },
+      {
+        "command": "mdAnnotate.addAnnotation",
+        "title": "添加批注",
+        "icon": "$(add)",
+        "category": "MD Annotate"
+      },
+      {
+        "command": "mdAnnotate.removeAnnotation",
+        "title": "删除批注",
+        "category": "MD Annotate"
+      },
+      {
+        "command": "mdAnnotate.toggleResolved",
+        "title": "切换批注解决状态",
+        "category": "MD Annotate"
       }
     ],
     "menus": {
@@ -29,12 +46,19 @@
           "command": "mdAnnotate.openAnnotationView",
           "group": "navigation"
         }
+      ],
+      "editor/context": [
+        {
+          "when": "resourceLangId == markdown && editorHasSelection",
+          "command": "mdAnnotate.addAnnotation",
+          "group": "mdAnnotate@1"
+        }
       ]
     },
     "customEditors": [
       {
         "viewType": "mdAnnotate.annotationEditor",
-        "displayName": "MD Annotate",
+        "displayName": "MD Annotate Editor",
         "selector": [
           {
             "filenamePattern": "*.md"
@@ -42,20 +66,38 @@
         ],
         "priority": "option"
       }
-    ]
+    ],
+    "views": {
+      "explorer": [
+        {
+          "type": "webview",
+          "id": "mdAnnotate.annotationPanel",
+          "name": "Annotations",
+          "when": "resourceLangId == markdown"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "MD Annotate",
+      "properties": {
+        "mdAnnotate.metadataLocation": {
+          "type": "string",
+          "enum": ["same-directory", ".annotations"],
+          "default": "same-directory",
+          "description": "Where to store annotation metadata files. 'same-directory' places them next to the markdown file, '.annotations' places them in a subdirectory."
+        }
+      }
+    }
   },
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "lint": "eslint src --ext ts"
+    "lint": "eslint src --ext ts",
+    "package": "vsce package"
   },
   "devDependencies": {
-    "@types/markdown-it": "^14.1.2",
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
     "typescript": "^5.3.0"
-  },
-  "dependencies": {
-    "markdown-it": "^14.1.1"
   }
 }

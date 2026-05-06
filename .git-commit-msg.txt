@@ -1,7 +1,0 @@
-feat: VSCode annotation plugin with CustomEditor
-
-- Non-invasive markdown annotation via companion .annotations.json files
-- CustomEditor-based annotation mode (markdown-it rendering + right-click input)
-- JSON schema for annotation format
-- Human and agent usage guides
-- Sample files demonstrating task tracking use case

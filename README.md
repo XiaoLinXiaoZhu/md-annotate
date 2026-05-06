@@ -1,61 +1,83 @@
 # MD Annotate
 
-非侵入式 Markdown 批注系统 —— 在不修改原文的情况下，为 markdown 文件添加评论、标记和协作信息。
+非侵入式 Markdown 批注系统——通过伴随元数据文件在 Markdown 上添加评论和笔记，不修改原始文档。
 
-## 项目结构
+## 功能
 
-```
-md-annotate/
-├── src/                    # VSCode 插件源码
-│   ├── extension.ts        # 插件入口
-│   ├── annotationStore.ts  # 读写 metadata JSON
-│   ├── webviewProvider.ts  # 侧栏批注面板
-│   ├── commands.ts         # 命令注册（添加/删除/切换批注）
-│   ├── decorations.ts      # 编辑器内装饰（💬 图标、悬浮提示）
-│   └── types.ts            # TypeScript 类型定义
-├── schema/
-│   └── annotations.schema.json  # JSON Schema 定义
-├── docs/
-│   ├── user-guide.md       # 人类使用说明
-│   └── agent-guide.md      # AI Agent 使用说明（含 jq 示例）
-├── sample/                 # 示例文件
-│   ├── example.md
-│   ├── example.annotations.json
-│   └── example.ai-annotations.json
-├── package.json            # VSCode 插件 manifest
-└── tsconfig.json
+- **批注模式**：在编辑器右上角点击按钮进入可视化批注界面，选中文本右键即可添加批注
+- **源码模式装饰**：在普通 Markdown 编辑视图中，被批注的行会显示 💬/🤖 图标
+- **侧边栏面板**：在资源管理器中查看当前文件的所有批注
+- **右键菜单**：选中文本后右键 → "添加批注"
+- **命令面板**：通过命令面板添加/删除/切换解决状态
+- **AI 批注支持**：通过独立的 `.ai-annotations.json` 文件，AI 可以对文档进行标注
+- **非侵入**：所有批注存储在 `.annotations.json` 文件中，Markdown 源文件不会有任何改动
+
+## 安装
+
+1. 克隆仓库
+2. `bun install`（或 `npm install`）
+3. 按 F5 在 Extension Development Host 中运行
+
+打包为 vsix：
+```bash
+npx vsce package
 ```
 
-## 快速开始
+## 使用
+
+1. 打开一个 `.md` 文件
+2. 选中文本 → 右键 → "添加批注"，或使用编辑器右上角的 💬 按钮进入批注模式
+3. 批注信息保存在同目录的 `<filename>.annotations.json` 中
+
+## 元数据格式
+
+```json
+{
+  "version": "1.0",
+  "source": "notes.md",
+  "author_type": "human",
+  "annotations": [
+    {
+      "id": "ann_abc123",
+      "anchor": {
+        "type": "text-range",
+        "start_text": "被批注的文本开头",
+        "end_text": "被批注的文本结尾"
+      },
+      "content": "批注内容",
+      "created_at": "2025-01-01T00:00:00.000Z",
+      "resolved": false,
+      "tags": ["todo"]
+    }
+  ]
+}
+```
+
+### Anchor 类型
+
+| 类型 | 字段 | 说明 |
+|------|------|------|
+| `text-range` | `start_text`, `end_text`, `paragraph_index?` | 按文本内容定位 |
+| `line-range` | `start_line`, `end_line` | 按行号定位 |
+| `heading` | `heading_text`, `heading_level?` | 按标题定位 |
+
+## 配置
+
+| 选项 | 值 | 说明 |
+|------|------|------|
+| `mdAnnotate.metadataLocation` | `"same-directory"` \| `".annotations"` | 元数据存放位置 |
+
+## Agent 使用说明
+
+AI agent 可以通过 `jq` 操作 `.ai-annotations.json` 文件来对文档进行批注：
 
 ```bash
-cd md-annotate
-bun install        # 或 npm install
-npx tsc -p ./     # 编译
+# 读取所有批注
+jq '.annotations' notes.ai-annotations.json
+
+# 添加一条批注
+jq '.annotations += [{"id":"ann_'$(date +%s)'","anchor":{"type":"text-range","start_text":"目标文本","end_text":"目标文本"},"content":"AI 的评论","created_at":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","resolved":false,"tags":[]}]' notes.ai-annotations.json > tmp && mv tmp notes.ai-annotations.json
+
+# 标记某条批注为已解决
+jq '(.annotations[] | select(.id == "ann_xxx")).resolved = true' notes.ai-annotations.json > tmp && mv tmp notes.ai-annotations.json
 ```
-
-然后在 VSCode 中按 F5 启动 Extension Development Host 测试。
-
-## 核心设计
-
-1. **非侵入**：所有批注数据存储在 `.annotations.json` 伴随文件中，原始 md 不受影响
-2. **双通道**：人类和 AI 各有独立的 metadata 文件，互不干扰
-3. **多种锚定**：支持文本片段匹配、行号范围、标题定位三种方式
-4. **CLI 友好**：JSON 格式对 jq 等工具天然友好，AI agent 可直接读写
-
-## 使用场景
-
-- 文档 review：在不改动原文的情况下添加审阅意见
-- 任务追踪：用批注标记待办事项、进度、优先级
-- AI 协作：AI 通过 metadata 文件提供反馈，人类在 VSCode 中直观查看
-- 学习笔记：给阅读材料添加个人注释
-
-## 已知限制
-
-- **评论浮窗**：VSCode API 不支持自定义弹出式浮窗，当前使用 InputBox 输入批注内容。未来可通过 Webview 面板内嵌编辑器实现更接近 Obsidian 的体验
-- **锚定漂移**：当源文本被大量修改时，`text-range` 锚定可能失效，会退回 `paragraph_index` 备用定位
-
-## 文档
-
-- [人类使用说明](docs/user-guide.md)
-- [Agent 使用说明](docs/agent-guide.md)
