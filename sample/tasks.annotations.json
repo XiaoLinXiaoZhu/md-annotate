@@ -1,0 +1,44 @@
+{
+  "version": "1.0",
+  "source": "tasks.md",
+  "author_type": "human",
+  "annotations": [
+    {
+      "id": "ann_task001",
+      "anchor": {
+        "type": "heading",
+        "heading_text": "冥想",
+        "heading_level": 2
+      },
+      "content": "优先级：高。计划下午做，期间让 AI 做 md-annotate 项目",
+      "created_at": "2025-01-15T09:00:00Z",
+      "resolved": false,
+      "tags": ["priority-high", "scheduled"]
+    },
+    {
+      "id": "ann_task002",
+      "anchor": {
+        "type": "text-range",
+        "start_text": "训练瓶颈需要确认",
+        "end_text": "可能需要租卡",
+        "paragraph_index": 7
+      },
+      "content": "先 profile 一下当前训练速度，确认是 GPU 还是数据加载的瓶颈",
+      "created_at": "2025-01-15T09:15:00Z",
+      "resolved": false,
+      "tags": ["blocker", "need-research"]
+    },
+    {
+      "id": "ann_task003",
+      "anchor": {
+        "type": "heading",
+        "heading_text": "PIL 输出结构研究",
+        "heading_level": 2
+      },
+      "content": "看看 IPython display 协议里 _repr_png_ 方法怎么工作的",
+      "created_at": "2025-01-15T09:20:00Z",
+      "resolved": false,
+      "tags": ["research"]
+    }
+  ]
+}

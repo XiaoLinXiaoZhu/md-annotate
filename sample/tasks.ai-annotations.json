@@ -1,0 +1,31 @@
+{
+  "version": "1.0",
+  "source": "tasks.md",
+  "author_type": "ai",
+  "annotations": [
+    {
+      "id": "ann_ai_task001",
+      "anchor": {
+        "type": "heading",
+        "heading_text": "full-duplex-chat 研究",
+        "heading_level": 2
+      },
+      "content": "关于训练瓶颈：建议先用 torch.profiler 跑一个 epoch 的 trace，看 GPU utilization 和 data loader idle time。如果是数据瓶颈，num_workers 和 prefetch_factor 调一下可能就够了，不一定需要租卡。",
+      "created_at": "2025-01-15T09:30:00Z",
+      "resolved": false,
+      "tags": ["suggestion", "training"]
+    },
+    {
+      "id": "ann_ai_task002",
+      "anchor": {
+        "type": "heading",
+        "heading_text": "PIL 输出结构研究",
+        "heading_level": 2
+      },
+      "content": "PIL Image 对象实现了 `_repr_png_()` 方法，Jupyter 通过 IPython display 协议调用它获取 PNG bytes。在 API 层面通常是 base64 编码后放入 multimodal message 的 image_url 字段。",
+      "created_at": "2025-01-15T09:31:00Z",
+      "resolved": false,
+      "tags": ["answer", "research"]
+    }
+  ]
+}

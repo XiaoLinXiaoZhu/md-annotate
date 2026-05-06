@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MD Annotate Metadata",
+  "description": "Non-invasive annotation metadata for a markdown file",
+  "type": "object",
+  "required": ["version", "source", "annotations"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "1.0",
+      "description": "Schema version"
+    },
+    "source": {
+      "type": "string",
+      "description": "Relative path to the annotated markdown file"
+    },
+    "author_type": {
+      "type": "string",
+      "enum": ["human", "ai"],
+      "description": "Who authored these annotations"
+    },
+    "annotations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/annotation"
+      }
+    }
+  },
+  "$defs": {
+    "annotation": {
+      "type": "object",
+      "required": ["id", "anchor", "content", "created_at"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ann_[a-z0-9]+$",
+          "description": "Unique annotation identifier"
+        },
+        "anchor": {
+          "$ref": "#/$defs/anchor",
+          "description": "Where in the source document this annotation attaches"
+        },
+        "content": {
+          "type": "string",
+          "description": "The annotation body (markdown allowed)"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "resolved": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether this annotation has been addressed"
+        },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Freeform tags for filtering"
+        },
+        "thread": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reply"
+          },
+          "description": "Threaded replies to this annotation"
+        }
+      }
+    },
+    "anchor": {
+      "type": "object",
+      "required": ["type"],
+      "oneOf": [
+        {
+          "properties": {
+            "type": { "const": "text-range" },
+            "start_text": { "type": "string", "description": "Text fragment at the start of selection" },
+            "end_text": { "type": "string", "description": "Text fragment at the end of selection" },
+            "paragraph_index": { "type": "integer", "minimum": 0, "description": "Zero-based paragraph index as fallback locator" }
+          },
+          "required": ["type", "start_text", "end_text"]
+        },
+        {
+          "properties": {
+            "type": { "const": "line-range" },
+            "start_line": { "type": "integer", "minimum": 1 },
+            "end_line": { "type": "integer", "minimum": 1 }
+          },
+          "required": ["type", "start_line", "end_line"]
+        },
+        {
+          "properties": {
+            "type": { "const": "heading" },
+            "heading_text": { "type": "string", "description": "Exact heading text to anchor to" },
+            "heading_level": { "type": "integer", "minimum": 1, "maximum": 6 }
+          },
+          "required": ["type", "heading_text"]
+        }
+      ]
+    },
+    "reply": {
+      "type": "object",
+      "required": ["id", "author_type", "content", "created_at"],
+      "properties": {
+        "id": { "type": "string" },
+        "author_type": { "type": "string", "enum": ["human", "ai"] },
+        "content": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}
