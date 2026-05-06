@@ -4,7 +4,7 @@
 
 var vscodeApi = acquireVsCodeApi();
 
-// ─── createEditor 运行时（from md-live-preview）───
+// ─── defaults.js ───
 const defaultBackend = {
     resolveLinkPath() { return null; },
     getResourceUrl(path) { return path; },
@@ -28,124 +28,7 @@ const defaultOptions = {
     cssVariables: {},
 };
 
-function createEditor(container, options = {}, backend = {}) {
-    // 合并默认值
-    const opts = { ...defaultOptions, ...options };
-    const be = { ...defaultBackend, ...backend };
-    // 验证运行时已加载
-    if (!window.__cm6 || !window.__cm6.EditorView) {
-        throw new Error('md-live-preview: Obsidian runtime not loaded. ' +
-            'Ensure vendor scripts are included before calling createEditor().');
-    }
-    const { EditorView, EditorState, Prec, keymap, Compartment, syntaxTree, } = window.__cm6;
-    const { searchHighlight: If } = window.__fields;
-    const { editor: jB, owner: WB, livePreview: KB } = window.__stateFields;
-    const { updateField: UB } = window.__stateEffects;
-    const { inputHandler: pT, stateField: lT, keymap: fT, markdownSurround: iB } = window.__closeBrackets;
-    const { base: ZB, dynamic: iN } = window.__compartments;
-    const indentUnit = window.__indentUnit;
-    const language = window.__language;
-    const baseExtensions = window.__baseExtensions;
-    const hangingIndent = window.__hangingIndent;
-    const lineNumbers = window.__lineNumbers;
-    const activeLineGutter = window.__activeLineGutter;
-    const highlightActiveLineGutter = window.__highlightActiveLineGutter;
-    const indentGuide = window.__indentGuide;
-    const foldGutter = window.__foldGutter;
-    const foldExtensions = window.__foldExtensions;
-    const foldHeading = window.__foldHeading;
-    const foldIndent = window.__foldIndent;
-    const foldEffect = window.__foldEffect;
-    const frontmatterHandler = window.__frontmatterHandler;
-    const { indentMore, indentLess, newlineAndIndent } = window.__commands;
-    const listRegex = window.__listRegex;
-    // 准备 DOM
-    const editorEl = container;
-    if (!editorEl.classList.contains('markdown-source-view')) {
-        editorEl.classList.add('markdown-source-view', 'mod-cm6', 'is-live-preview');
-    }
-    if (opts.readableLineWidth) {
-        editorEl.classList.add('is-readable-line-width');
-    }
-    // 注入自定义 CSS 变量
-    if (opts.cssVariables) {
-        for (const [key, value] of Object.entries(opts.cssVariables)) {
-            const prop = key.startsWith('--') ? key : `--${key}`;
-            editorEl.style.setProperty(prop, value);
-        }
-    }
-    // 构造 mockApp——将后端接口注入
-    const mockApp = buildMockApp(be, opts);
-    // 创建 EditorView
-    const view = new EditorView({ parent: editorEl });
-    // 构造 mockOwner / mockEditor
-    const mockOwner = {
-        file: {
-            path: opts.filePath || 'untitled.md',
-            name: (opts.filePath || 'untitled.md').split('/').pop(),
-            basename: (opts.filePath || 'untitled.md').split('/').pop().replace(/\.md$/, ''),
-            extension: 'md',
-        },
-        saveImmediately() {
-            if (opts.onSave)
-                opts.onSave(view.state.doc.toString());
-        },
-    };
-    const mockEditor = buildMockEditor(view, editorEl, mockApp, mockOwner, be, EditorView, EditorState);
-    // 构建 extensions
-    const localExtensions = buildLocalExtensions(view, mockOwner, mockEditor, editorEl, opts, be, { jB, WB, KB, EditorView, EditorState, keymap, hangingIndent, language, listRegex, indentMore, indentLess, newlineAndIndent });
-    const dynamicExtensions = buildDynamicExtensions(mockApp, mockEditor, view, editorEl, opts, { EditorView, EditorState, KB, indentUnit, lineNumbers, activeLineGutter, highlightActiveLineGutter,
-        indentGuide, foldGutter, foldExtensions, foldHeading: foldHeading, foldIndent: foldIndent,
-        foldEffect, pT, lT, fT, iB, frontmatterHandler, keymap });
-    // 组装 state
-    const nN = ZB.of(baseExtensions);
-    const fullState = EditorState.create({
-        doc: opts.doc || '',
-        extensions: [
-            localExtensions,
-            iN.of(dynamicExtensions),
-            nN,
-        ],
-    });
-    view.setState(fullState);
-    // 语法树增量解析完成后强制刷新
-    function forceRebuild() {
-        view.dispatch({});
-        const tree = syntaxTree(view.state);
-        if (tree.length < view.state.doc.length) {
-            setTimeout(forceRebuild, 50);
-        }
-    }
-    setTimeout(forceRebuild, 50);
-    // ─── 内建：链接点击处理 ───
-    setupLinkClickHandler(view, editorEl, opts, be);
-    // ─── 内建：中文括号自动转换（【【→[[, 】】→]]）───
-    setupExpandText(view);
-    // ─── 返回实例 ───
-    const instance = {
-        view,
-        getDoc() { return view.state.doc.toString(); },
-        setDoc(content) {
-            view.dispatch({
-                changes: { from: 0, to: view.state.doc.length, insert: content },
-            });
-        },
-        getSelection() {
-            const { from, to } = view.state.selection.main;
-            return view.state.doc.sliceString(from, to);
-        },
-        destroy() {
-            view.destroy();
-            editorEl.innerHTML = '';
-        },
-        focus() { view.focus(); },
-        registerSuggest(config) {
-            return setupSuggest(view, config);
-        },
-    };
-    return instance;
-}
-// ─── 内部构建函数 ───
+// ─── mock-app.js ───
 function buildMockApp(be, opts) {
     return {
         vault: {
@@ -224,82 +107,7 @@ function buildMockEditor(view, editorEl, mockApp, mockOwner, be, EditorView, Edi
         sourceMode: false,
         scope: null,
         owner: mockOwner,
-        clipboardManager: {
-            handleDragOver(e) {
-                e.preventDefault();
-                editorEl.classList.add('is-drop-target');
-            },
-            async handleDrop(e) {
-                editorEl.classList.remove('is-drop-target');
-                const files = e.dataTransfer?.files;
-                if (!files || files.length === 0)
-                    return;
-                e.preventDefault();
-                for (const file of Array.from(files)) {
-                    const buf = await file.arrayBuffer();
-                    const savedPath = await be.saveAttachment(file.name, buf);
-                    if (savedPath) {
-                        const insert = file.type.startsWith('image/') ? `![[${savedPath}]]` : `[[${savedPath}]]`;
-                        const { from, to } = view.state.selection.main;
-                        view.dispatch({
-                            changes: { from, to, insert },
-                            selection: { anchor: from + insert.length },
-                            userEvent: 'input.drop',
-                        });
-                    }
-                }
-            },
-            handlePaste(e) {
-                // 图片粘贴
-                const items = e.clipboardData?.items;
-                if (items) {
-                    for (const item of Array.from(items)) {
-                        if (item.type.startsWith('image/')) {
-                            e.preventDefault();
-                            const blob = item.getAsFile();
-                            if (!blob)
-                                return;
-                            blob.arrayBuffer().then(async (buf) => {
-                                const name = `paste-${Date.now()}.${blob.type.split('/')[1] || 'png'}`;
-                                const savedPath = await be.saveAttachment(name, buf);
-                                if (savedPath) {
-                                    const insert = `![[${savedPath}]]`;
-                                    const { from, to } = view.state.selection.main;
-                                    view.dispatch({
-                                        changes: { from, to, insert },
-                                        selection: { anchor: from + insert.length },
-                                        userEvent: 'input.paste',
-                                    });
-                                }
-                            });
-                            return;
-                        }
-                    }
-                }
-                // HTML 粘贴转 Markdown
-                const html = e.clipboardData?.getData('text/html');
-                if (!html)
-                    return;
-                if (!window.TurndownService)
-                    return;
-                try {
-                    const td = new window.TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
-                    const md = td.turndown(html);
-                    if (!md || !md.trim())
-                        return;
-                    e.preventDefault();
-                    const { from, to } = view.state.selection.main;
-                    view.dispatch({
-                        changes: { from, to, insert: md },
-                        selection: { anchor: from + md.length },
-                        userEvent: 'input.paste',
-                    });
-                }
-                catch (err) {
-                    console.warn('Paste conversion failed:', err);
-                }
-            },
-        },
+        clipboardManager: buildClipboardManager(view, be, editorEl),
         addChild(c) { return c; },
         removeChild(_c) { },
         register(_cb) { },
@@ -326,6 +134,88 @@ function buildMockEditor(view, editorEl, mockApp, mockOwner, be, EditorView, Edi
     };
     return mockEditor;
 }
+function buildClipboardManager(view, be, editorEl) {
+    return {
+        handleDragOver(e) {
+            e.preventDefault();
+            editorEl.classList.add('is-drop-target');
+        },
+        async handleDrop(e) {
+            editorEl.classList.remove('is-drop-target');
+            const files = e.dataTransfer?.files;
+            if (!files || files.length === 0)
+                return;
+            e.preventDefault();
+            for (const file of Array.from(files)) {
+                const buf = await file.arrayBuffer();
+                const savedPath = await be.saveAttachment(file.name, buf);
+                if (savedPath) {
+                    const insert = file.type.startsWith('image/') ? `![[${savedPath}]]` : `[[${savedPath}]]`;
+                    const { from, to } = view.state.selection.main;
+                    view.dispatch({
+                        changes: { from, to, insert },
+                        selection: { anchor: from + insert.length },
+                        userEvent: 'input.drop',
+                    });
+                }
+            }
+        },
+        handlePaste(e) {
+            const items = e.clipboardData?.items;
+            if (items) {
+                for (const item of Array.from(items)) {
+                    if (item.type.startsWith('image/')) {
+                        e.preventDefault();
+                        const blob = item.getAsFile();
+                        if (!blob)
+                            return;
+                        blob.arrayBuffer().then(async (buf) => {
+                            const name = `paste-${Date.now()}.${blob.type.split('/')[1] || 'png'}`;
+                            const savedPath = await be.saveAttachment(name, buf);
+                            if (savedPath) {
+                                const insert = `![[${savedPath}]]`;
+                                const { from, to } = view.state.selection.main;
+                                view.dispatch({
+                                    changes: { from, to, insert },
+                                    selection: { anchor: from + insert.length },
+                                    userEvent: 'input.paste',
+                                });
+                            }
+                        });
+                        return;
+                    }
+                }
+            }
+            const html = e.clipboardData?.getData('text/html');
+            if (!html)
+                return;
+            if (!window.TurndownService)
+                return;
+            try {
+                const td = new window.TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
+                const md = td.turndown(html);
+                if (!md || !md.trim())
+                    return;
+                e.preventDefault();
+                const { from, to } = view.state.selection.main;
+                view.dispatch({
+                    changes: { from, to, insert: md },
+                    selection: { anchor: from + md.length },
+                    userEvent: 'input.paste',
+                });
+            }
+            catch (err) {
+                console.warn('Paste conversion failed:', err);
+            }
+        },
+    };
+}
+
+// ─── extensions.js ───
+/**
+ * CodeMirror 扩展的组装逻辑。
+ * 将 Obsidian 暴露的各原子扩展按用户配置拼装为完整 extension 数组。
+ */
 function buildLocalExtensions(view, mockOwner, mockEditor, editorEl, opts, be, deps) {
     const { jB, WB, EditorView, keymap, hangingIndent, language, listRegex, indentMore, indentLess, newlineAndIndent } = deps;
     return [
@@ -388,7 +278,6 @@ function buildLocalExtensions(view, mockOwner, mockEditor, editorEl, opts, be, d
                 run(v) { return indentMore(v); },
                 shift(v) { return indentLess(v); },
             },
-            // Ctrl+S / Cmd+S 保存
             {
                 key: 'Mod-s',
                 run(v) {
@@ -432,10 +321,8 @@ function buildDynamicExtensions(mockApp, mockEditor, view, editorEl, opts, deps)
             exts.push(foldIndent);
         exts.push(foldEffect);
     }
-    // Live preview extensions
     const livePreviewExts = window.__kH(mockEditor, view);
     exts.push(livePreviewExts);
-    // Auto-pair
     if (opts.autoPairBrackets || opts.autoPairMarkdown) {
         const brackets = [];
         if (opts.autoPairBrackets)
@@ -450,13 +337,13 @@ function buildDynamicExtensions(mockApp, mockEditor, view, editorEl, opts, deps)
     }
     return exts;
 }
-// ─── 链接点击处理 ───
+
+// ─── link-handler.js ───
 function setupLinkClickHandler(view, editorEl, opts, be) {
     editorEl.addEventListener('click', (e) => {
         const target = e.target;
         if (!target || !target.closest)
             return;
-        // 内部链接：[[link]] 渲染后有 .internal-link 或 .cm-hmd-internal-link
         const internalLink = target.closest('.internal-link, .cm-hmd-internal-link');
         if (internalLink) {
             e.preventDefault();
@@ -474,7 +361,6 @@ function setupLinkClickHandler(view, editorEl, opts, be) {
             }
             return;
         }
-        // 外部链接：[text](url) 渲染后有 .external-link
         const externalLink = target.closest('.external-link');
         if (externalLink) {
             const href = externalLink.getAttribute('href') || externalLink.getAttribute('data-href') || '';
@@ -490,7 +376,6 @@ function setupLinkClickHandler(view, editorEl, opts, be) {
                 return;
             }
         }
-        // Fallback：.cm-underline 内的链接
         const underline = target.closest('.cm-underline');
         if (underline) {
             const linkParent = underline.closest('.cm-hmd-internal-link');
@@ -542,17 +427,20 @@ function extractLinkAtPos(view, pos) {
     }
     return null;
 }
-// ─── 中文括号自动转换 ───
+
+// ─── expand-text.js ───
+/**
+ * 中文括号自动转换：【【→[[, 】】→]]
+ */
+const rules = [
+    { regex: /(！)?【【$/, replace: (m) => m[1] ? '![[' : '[[' },
+    { regex: /】】$/, replace: () => ']]' },
+];
 function setupExpandText(view) {
     const { EditorView, StateEffect } = window.__cm6;
-    const rules = [
-        { regex: /(！)?【【$/, replace: (m) => m[1] ? '![[' : '[[' },
-        { regex: /】】$/, replace: () => ']]' },
-    ];
     const listener = EditorView.updateListener.of((update) => {
         if (!update.docChanged)
             return;
-        // 只在用户输入时触发
         const isUserInput = update.transactions.some((tr) => tr.isUserEvent('input'));
         if (!isUserInput)
             return;
@@ -577,7 +465,8 @@ function setupExpandText(view) {
     });
     view.dispatch({ effects: StateEffect.appendConfig.of(listener) });
 }
-// ─── 补全注册 ───
+
+// ─── suggest.js ───
 function setupSuggest(view, config) {
     const { EditorView, StateEffect } = window.__cm6;
     let suggestEl = null;
@@ -641,7 +530,6 @@ function setupSuggest(view, config) {
         if (config.onAccept)
             config.onAccept(item);
     }
-    // 监听文档/选区变更
     const listener = EditorView.updateListener.of((update) => {
         if (!active)
             return;
@@ -694,7 +582,6 @@ function setupSuggest(view, config) {
         }
     });
     view.dispatch({ effects: StateEffect.appendConfig.of(listener) });
-    // 键盘拦截（capture phase）
     const keyHandler = (e) => {
         if (!suggestEl || suggestEl.style.display === 'none')
             return;
@@ -720,7 +607,6 @@ function setupSuggest(view, config) {
         }
     };
     view.dom.addEventListener('keydown', keyHandler, true);
-    // 返回取消注册函数
     return () => {
         active = false;
         view.dom.removeEventListener('keydown', keyHandler, true);
@@ -732,6 +618,110 @@ function setupSuggest(view, config) {
 }
 function escapeHtml(text) {
     return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// ─── create.js ───
+function createEditor(container, options = {}, backend = {}) {
+    const opts = { ...defaultOptions, ...options };
+    const be = { ...defaultBackend, ...backend };
+    if (!window.__cm6 || !window.__cm6.EditorView) {
+        throw new Error('md-live-preview: Obsidian runtime not loaded. ' +
+            'Ensure vendor scripts are included before calling createEditor().');
+    }
+    const { EditorView, EditorState, keymap, syntaxTree } = window.__cm6;
+    const { editor: jB, owner: WB, livePreview: KB } = window.__stateFields;
+    const { inputHandler: pT, stateField: lT, keymap: fT, markdownSurround: iB } = window.__closeBrackets;
+    const { base: ZB, dynamic: iN } = window.__compartments;
+    const editorEl = container;
+    if (!editorEl.classList.contains('markdown-source-view')) {
+        editorEl.classList.add('markdown-source-view', 'mod-cm6', 'is-live-preview');
+    }
+    if (opts.readableLineWidth) {
+        editorEl.classList.add('is-readable-line-width');
+    }
+    if (opts.cssVariables) {
+        for (const [key, value] of Object.entries(opts.cssVariables)) {
+            const prop = key.startsWith('--') ? key : `--${key}`;
+            editorEl.style.setProperty(prop, value);
+        }
+    }
+    const mockApp = buildMockApp(be, opts);
+    const view = new EditorView({ parent: editorEl });
+    const mockOwner = {
+        file: {
+            path: opts.filePath || 'untitled.md',
+            name: (opts.filePath || 'untitled.md').split('/').pop(),
+            basename: (opts.filePath || 'untitled.md').split('/').pop().replace(/\.md$/, ''),
+            extension: 'md',
+        },
+        saveImmediately() {
+            if (opts.onSave)
+                opts.onSave(view.state.doc.toString());
+        },
+    };
+    const mockEditor = buildMockEditor(view, editorEl, mockApp, mockOwner, be, EditorView, EditorState);
+    const localExtensions = buildLocalExtensions(view, mockOwner, mockEditor, editorEl, opts, be, {
+        jB, WB, EditorView, EditorState, keymap,
+        hangingIndent: window.__hangingIndent,
+        language: window.__language,
+        listRegex: window.__listRegex,
+        indentMore: window.__commands.indentMore,
+        indentLess: window.__commands.indentLess,
+        newlineAndIndent: window.__commands.newlineAndIndent,
+    });
+    const dynamicExtensions = buildDynamicExtensions(mockApp, mockEditor, view, editorEl, opts, {
+        EditorView, EditorState, KB,
+        indentUnit: window.__indentUnit,
+        lineNumbers: window.__lineNumbers,
+        activeLineGutter: window.__activeLineGutter,
+        highlightActiveLineGutter: window.__highlightActiveLineGutter,
+        indentGuide: window.__indentGuide,
+        foldGutter: window.__foldGutter,
+        foldExtensions: window.__foldExtensions,
+        foldHeading: window.__foldHeading,
+        foldIndent: window.__foldIndent,
+        foldEffect: window.__foldEffect,
+        pT, lT, fT, iB,
+        frontmatterHandler: window.__frontmatterHandler,
+        keymap,
+    });
+    const nN = ZB.of(window.__baseExtensions);
+    const fullState = EditorState.create({
+        doc: opts.doc || '',
+        extensions: [localExtensions, iN.of(dynamicExtensions), nN],
+    });
+    view.setState(fullState);
+    function forceRebuild() {
+        view.dispatch({});
+        const tree = syntaxTree(view.state);
+        if (tree.length < view.state.doc.length) {
+            setTimeout(forceRebuild, 50);
+        }
+    }
+    setTimeout(forceRebuild, 50);
+    setupLinkClickHandler(view, editorEl, opts, be);
+    setupExpandText(view);
+    return {
+        view,
+        getDoc() { return view.state.doc.toString(); },
+        setDoc(content) {
+            view.dispatch({
+                changes: { from: 0, to: view.state.doc.length, insert: content },
+            });
+        },
+        getSelection() {
+            const { from, to } = view.state.selection.main;
+            return view.state.doc.sliceString(from, to);
+        },
+        destroy() {
+            view.destroy();
+            editorEl.innerHTML = '';
+        },
+        focus() { view.focus(); },
+        registerSuggest(config) {
+            return setupSuggest(view, config);
+        },
+    };
 }
 
 
@@ -1055,5 +1045,7 @@ window.addEventListener('createAiFile', function() {
 
 // ─── 通知 extension 准备就绪 ───
 vscodeApi.postMessage({ type: 'ready' });
+
+
 
 })();
