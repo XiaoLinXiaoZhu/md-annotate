@@ -2,7 +2,7 @@
   "name": "md-annotate",
   "displayName": "MD Annotate",
   "description": "Non-invasive markdown annotation system — add comments and notes via companion metadata files without modifying the original markdown.",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "publisher": "XiaoLinXiaoZhu",
   "repository": {
     "type": "git",
@@ -11,8 +11,12 @@
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": ["Other"],
-  "activationEvents": ["onLanguage:markdown"],
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:markdown"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
@@ -82,7 +86,10 @@
       "properties": {
         "mdAnnotate.metadataLocation": {
           "type": "string",
-          "enum": ["same-directory", ".annotations"],
+          "enum": [
+            "same-directory",
+            ".annotations"
+          ],
           "default": "same-directory",
           "description": "Where to store annotation metadata files. 'same-directory' places them next to the markdown file, '.annotations' places them in a subdirectory."
         }
