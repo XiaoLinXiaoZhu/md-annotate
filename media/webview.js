@@ -324,7 +324,30 @@ function buildMockEditor(view, editorEl, mockApp, mockOwner, be, EditorView, Edi
         getCursor() { return { line: 0, ch: 0 }; },
         getLine(_n) { return ''; },
         removeHighlights() { },
-        expandText() { },
+        expandText() {
+      // 中文括号转换规则（与 Obsidian 一致）
+      var cm = view;
+      var state = cm.state;
+      var cursor = state.selection.main.head;
+      var line = state.doc.lineAt(cursor);
+      var textBefore = line.text.slice(0, cursor - line.from);
+      var rules = [
+        { regex: /(！)?【【$/, replace: function(m) { return m[1] ? '![[' : '[['; } },
+        { regex: /】】$/, replace: function() { return ']]'; } },
+      ];
+      for (var i = 0; i < rules.length; i++) {
+        var match = textBefore.match(rules[i].regex);
+        if (match) {
+          var replaceText = rules[i].replace(match);
+          var from = cursor - match[0].length;
+          cm.dispatch({
+            changes: { from: from, to: cursor, insert: replaceText },
+            selection: { anchor: from + replaceText.length },
+          });
+          break;
+        }
+      }
+    },
     };
     return mockEditor;
 }
@@ -973,79 +996,75 @@ function setupLinkCompletion(view) {
     view.focus();
   }
 
-  // 注册 ViewPlugin 监听文档变更
-  var linkSuggestPlugin = ViewPlugin.define(function(view) {
-    return {
-      update: function(update) {
-        if (!update.docChanged && !update.selectionSet) return;
-        var state = update.state;
-        var cursor = state.selection.main.head;
-        var line = state.doc.lineAt(cursor);
-        var textBefore = line.text.slice(0, cursor - line.from);
+  // 使用 EditorView.updateListener 监听文档/选区变更
+  var EditorView = window.__cm6.EditorView;
+  var StateEffect = window.__cm6.StateEffect;
 
-        // 使用 Obsidian 的触发逻辑：[[ 存在，且最后一个 ] 在 [[ 之前
-        var bracketIdx = textBefore.lastIndexOf('[[');
-        var lastClose = textBefore.lastIndexOf(']');
-        if (bracketIdx === -1 || lastClose > bracketIdx) {
-          hideSuggest();
-          return;
+  var listener = EditorView.updateListener.of(function(update) {
+    if (!update.docChanged && !update.selectionSet) return;
+    var state = update.state;
+    var cursor = state.selection.main.head;
+    var line = state.doc.lineAt(cursor);
+    var textBefore = line.text.slice(0, cursor - line.from);
+
+    // 使用 Obsidian 的触发逻辑：[[ 存在，且最后一个 ] 在 [[ 之前
+    var bracketIdx = textBefore.lastIndexOf('[[');
+    var lastClose = textBefore.lastIndexOf(']');
+    if (bracketIdx === -1 || lastClose > bracketIdx) {
+      hideSuggest();
+      return;
+    }
+    var query = textBefore.slice(bracketIdx + 2).toLowerCase();
+    console.log('[md-annotate] [[ triggered, query:', query, 'linkIndex size:', linkIndex.size);
+    triggerPos = line.from + bracketIdx;
+
+    // 过滤匹配项
+    var filtered = [];
+    linkIndex.forEach(function(path, name) {
+      if (name.toLowerCase().includes(query) || path.toLowerCase().includes(query)) {
+        if (!filtered.some(function(f) { return f.path === path; })) {
+          filtered.push({ name: name, path: path });
         }
-        var query = textBefore.slice(bracketIdx + 2).toLowerCase();
-        console.log('[md-annotate] [[ triggered, query:', query, 'linkIndex size:', linkIndex.size);
-        triggerPos = line.from + bracketIdx;
+      }
+    });
+    filtered = filtered.slice(0, 20);
 
-        // 过滤匹配项
-        var filtered = [];
-        linkIndex.forEach(function(path, name) {
-          if (name.toLowerCase().includes(query) || path.toLowerCase().includes(query)) {
-            // 去重（同一个 path 只出现一次）
-            if (!filtered.some(function(f) { return f.path === path; })) {
-              filtered.push({ name: name, path: path });
-            }
-          }
-        });
-        filtered = filtered.slice(0, 20); // 最多 20 项
+    if (filtered.length === 0) {
+      console.log('[md-annotate] no matches for query');
+      hideSuggest();
+      return;
+    }
 
-        if (filtered.length === 0) {
-          console.log('[md-annotate] no matches for query');
-          hideSuggest();
-          return;
+    // 获取光标坐标
+    var coords = update.view.coordsAtPos(cursor);
+    if (!coords) {
+      var sel = window.getSelection();
+      if (sel && sel.rangeCount > 0) {
+        var range = sel.getRangeAt(0);
+        var rect = range.getBoundingClientRect();
+        if (rect.width > 0 || rect.height > 0) {
+          coords = { left: rect.left, bottom: rect.bottom };
         }
-
-        // 获取光标坐标
-        var coords = update.view.coordsAtPos(cursor);
-        if (!coords) {
-          // fallback: 尝试从 cursor DOM 元素或 selection rect 获取位置
-          var sel = window.getSelection();
-          if (sel && sel.rangeCount > 0) {
-            var range = sel.getRangeAt(0);
-            var rect = range.getBoundingClientRect();
-            if (rect.width > 0 || rect.height > 0) {
-              coords = { left: rect.left, bottom: rect.bottom };
-            }
-          }
-          if (!coords) {
-            var cursorEl = update.view.dom.querySelector('.cm-cursor');
-            if (cursorEl) {
-              var cursorRect = cursorEl.getBoundingClientRect();
-              coords = { left: cursorRect.left, bottom: cursorRect.bottom };
-            } else {
-              var domRect = update.view.dom.getBoundingClientRect();
-              coords = { left: domRect.left + 50, bottom: domRect.top + 30 };
-            }
-          }
+      }
+      if (!coords) {
+        var cursorEl = update.view.dom.querySelector('.cm-cursor');
+        if (cursorEl) {
+          var cursorRect = cursorEl.getBoundingClientRect();
+          coords = { left: cursorRect.left, bottom: cursorRect.bottom };
+        } else {
+          var domRect = update.view.dom.getBoundingClientRect();
+          coords = { left: domRect.left + 50, bottom: domRect.top + 30 };
         }
-        console.log('[md-annotate] showing suggest, items:', filtered.length, 'coords:', coords);
-        showSuggest(coords, filtered);
-      },
-    };
+      }
+    }
+    console.log('[md-annotate] showing suggest, items:', filtered.length, 'coords:', coords);
+    showSuggest(coords, filtered);
   });
 
-  // 添加 plugin 到编辑器
   view.dispatch({
-    effects: window.__cm6.StateEffect.appendConfig.of(linkSuggestPlugin),
+    effects: StateEffect.appendConfig.of(listener),
   });
-  console.log('[md-annotate] linkSuggestPlugin registered via appendConfig');
+  console.log('[md-annotate] link suggest listener registered');
 
   // 键盘事件处理（上下选择、回车确认、Esc关闭）
   view.dom.addEventListener('keydown', function(e) {
