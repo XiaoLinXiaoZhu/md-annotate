@@ -574,7 +574,6 @@ window.addEventListener('message', (event) => {
         linkIndex.set(t.path, t.path);
         if (t.aliases) t.aliases.forEach(a => linkIndex.set(a, t.path));
       });
-      console.log('[md-annotate] init received, linkTargets count:', (msg.linkTargets || []).length, 'linkIndex size:', linkIndex.size);
       initEditor(msg.doc || '', msg.filePath || 'untitled.md');
       break;
     }
@@ -603,7 +602,6 @@ window.addEventListener('message', (event) => {
 // ─── 编辑器初始化 ───
 
 async function initEditor(doc, filePath) {
-  console.log('[md-annotate] initEditor called, doc length:', doc?.length);
   try {
   const container = document.getElementById('editor-container');
   if (!container) return;
@@ -632,7 +630,6 @@ async function initEditor(doc, filePath) {
   setupLinkClick(editor.view);
 
 
-console.log('[md-annotate] editor initialized successfully');
   } catch(e) {
     console.error('[md-annotate] initEditor failed:', e);
     document.getElementById('editor-container').textContent = 'Editor init error: ' + e.message;
@@ -850,7 +847,6 @@ function setupLinkClick(view) {
         || internalLink.getAttribute('href')
         || internalLink.textContent.trim();
       if (linkText) {
-        console.log('[md-annotate] internal link clicked:', linkText);
         backend.openFile(linkText);
       }
       return;
@@ -867,7 +863,6 @@ function setupLinkClick(view) {
       if (href && (href.startsWith('http://') || href.startsWith('https://') || href.startsWith('mailto:'))) {
         e.preventDefault();
         e.stopPropagation();
-        console.log('[md-annotate] external link clicked:', href);
         vscodeApi.postMessage({ type: 'rpc', id: 0, method: 'openExternal', params: { url: href } });
         return;
       }
@@ -884,7 +879,6 @@ function setupLinkClick(view) {
         var pos = view.posAtDOM(underline);
         var linkContent = extractLinkAtPos(view, pos);
         if (linkContent) {
-          console.log('[md-annotate] link extracted at pos:', linkContent);
           backend.openFile(linkContent);
         }
         return;
@@ -933,7 +927,6 @@ function setupLinkCompletion(view) {
   var suggestItems = [];
   var selectedIdx = 0;
   var triggerPos = -1;
-  console.log('[md-annotate] setupLinkCompletion called, linkIndex size:', linkIndex.size);
 
   function createSuggestEl() {
     if (suggestEl) return suggestEl;
@@ -1015,7 +1008,6 @@ function setupLinkCompletion(view) {
       return;
     }
     var query = textBefore.slice(bracketIdx + 2).toLowerCase();
-    console.log('[md-annotate] [[ triggered, query:', query, 'linkIndex size:', linkIndex.size);
     triggerPos = line.from + bracketIdx;
 
     // 过滤匹配项
@@ -1030,7 +1022,6 @@ function setupLinkCompletion(view) {
     filtered = filtered.slice(0, 20);
 
     if (filtered.length === 0) {
-      console.log('[md-annotate] no matches for query');
       hideSuggest();
       return;
     }
@@ -1057,31 +1048,74 @@ function setupLinkCompletion(view) {
         }
       }
     }
-    console.log('[md-annotate] showing suggest, items:', filtered.length, 'coords:', coords);
     showSuggest(coords, filtered);
   });
 
   view.dispatch({
     effects: StateEffect.appendConfig.of(listener),
   });
-  console.log('[md-annotate] link suggest listener registered');
 
-  // 键盘事件处理（上下选择、回车确认、Esc关闭）
+  // ─── 【【→[[ 中文括号自动转换 ───
+  var cnBracketListener = EditorView.updateListener.of(function(update) {
+    if (!update.docChanged) return;
+    // 只在用户输入时触发（非程序性修改）
+    var isUserInput = update.transactions.some(function(tr) {
+      return tr.isUserEvent('input');
+    });
+    if (!isUserInput) return;
+
+    var state = update.state;
+    var cursor = state.selection.main.head;
+    var line = state.doc.lineAt(cursor);
+    var textBefore = line.text.slice(0, cursor - line.from);
+
+    var rules = [
+      { regex: /(！)?【【$/, replace: function(m) { return m[1] ? '![[' : '[['; } },
+      { regex: /】】$/, replace: function() { return ']]'; } },
+    ];
+
+    for (var i = 0; i < rules.length; i++) {
+      var match = textBefore.match(rules[i].regex);
+      if (match) {
+        var replaceText = rules[i].replace(match);
+        var from = cursor - match[0].length;
+        // 使用 setTimeout 避免在 update 回调中直接 dispatch
+        setTimeout(function() {
+          view.dispatch({
+            changes: { from: from, to: cursor, insert: replaceText },
+            selection: { anchor: from + replaceText.length },
+          });
+        }, 0);
+        break;
+      }
+    }
+  });
+
+  view.dispatch({
+    effects: StateEffect.appendConfig.of(cnBracketListener),
+  });
+
+  // 键盘事件处理（capture phase 确保在 CM6 keymap 之前拦截）
   view.dom.addEventListener('keydown', function(e) {
     if (!suggestEl || suggestEl.style.display === 'none') return;
     if (e.key === 'ArrowDown') {
       e.preventDefault();
+      e.stopPropagation();
       updateSelection(selectedIdx + 1);
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
+      e.stopPropagation();
       updateSelection(selectedIdx - 1);
     } else if (e.key === 'Enter' || e.key === 'Tab') {
       e.preventDefault();
+      e.stopPropagation();
       acceptSuggestion(view, selectedIdx);
     } else if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
       hideSuggest();
     }
-  });
+  }, true);
 }
 
 // 切回源码模式

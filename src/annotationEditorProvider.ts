@@ -518,27 +518,19 @@ body {
     </div>
   </div>
 
-  <!-- Obsidian 运行时 (with diagnostics) -->
-  <script nonce="${nonce}">console.log('[md-annotate] loading scripts...');</script>
+  <!-- Obsidian 运行时 -->
   <script nonce="${nonce}" src="${mediaBase}/vendor/lib/i18next.min.js"></script>
-  <script nonce="${nonce}">console.log('[md-annotate] ✓ i18next', typeof i18next);</script>
   <script nonce="${nonce}" src="${mediaBase}/vendor/lib/codemirror.js"></script>
-  <script nonce="${nonce}">console.log('[md-annotate] ✓ codemirror', typeof CodeMirror);</script>
   <script nonce="${nonce}" src="${mediaBase}/vendor/lib/meta.min.js"></script>
   <script nonce="${nonce}" src="${mediaBase}/vendor/lib/modes.min.js"></script>
   <script nonce="${nonce}" src="${mediaBase}/vendor/lib/markdown.js"></script>
   <script nonce="${nonce}" src="${mediaBase}/vendor/lib/turndown.js"></script>
-  <script nonce="${nonce}">console.log('[md-annotate] ✓ turndown', typeof TurndownService);</script>
   <script nonce="${nonce}" src="${mediaBase}/vendor/enhance.js"></script>
-  <script nonce="${nonce}">console.log('[md-annotate] ✓ enhance done');</script>
   <script nonce="${nonce}" src="${mediaBase}/mock.js"></script>
-  <script nonce="${nonce}">console.log('[md-annotate] ✓ mock done, window.process:', typeof window.process);</script>
   <script nonce="${nonce}" src="${mediaBase}/vendor/obsidian-app.patched.js"></script>
-  <script nonce="${nonce}">console.log('[md-annotate] ✓ obsidian-app done, window.__cm6:', typeof window.__cm6, window.__cm6 ? Object.keys(window.__cm6) : 'null');</script>
 
   <!-- webview 入口 -->
   <script nonce="${nonce}" src="${mediaBase}/webview.js"></script>
-  <script nonce="${nonce}">console.log('[md-annotate] ✓ webview.js loaded');</script>
 
   <!-- 切回源码模式 -->
   <script nonce="${nonce}">
