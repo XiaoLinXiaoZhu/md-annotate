@@ -1,17 +1,8 @@
-// md-annotate webview — self-contained (no ES module imports)
+// md-annotate webview — self-contained
 (function() {
 'use strict';
 
 var vscodeApi = acquireVsCodeApi();
-
-console.log('[md-annotate] webview.js loaded');
-
-// 错误上报到 extension
-window.onerror = function(msg, src, line, col, err) {
-  console.error('[md-annotate] Error:', msg, 'at', src, line, col);
-  try { vscodeApi.postMessage({ type: 'webviewError', error: String(msg), stack: err?.stack }); } catch(e) {}
-};
-
 
 // ─── createEditor 运行时（from md-live-preview）───
 const defaultBackend = {
@@ -126,7 +117,11 @@ function createEditor(container, options = {}, backend = {}) {
         }
     }
     setTimeout(forceRebuild, 50);
-    // 返回实例
+    // ─── 内建：链接点击处理 ───
+    setupLinkClickHandler(view, editorEl, opts, be);
+    // ─── 内建：中文括号自动转换（【【→[[, 】】→]]）───
+    setupExpandText(view);
+    // ─── 返回实例 ───
     const instance = {
         view,
         getDoc() { return view.state.doc.toString(); },
@@ -144,6 +139,9 @@ function createEditor(container, options = {}, backend = {}) {
             editorEl.innerHTML = '';
         },
         focus() { view.focus(); },
+        registerSuggest(config) {
+            return setupSuggest(view, config);
+        },
     };
     return instance;
 }
@@ -324,30 +322,7 @@ function buildMockEditor(view, editorEl, mockApp, mockOwner, be, EditorView, Edi
         getCursor() { return { line: 0, ch: 0 }; },
         getLine(_n) { return ''; },
         removeHighlights() { },
-        expandText() {
-      // 中文括号转换规则（与 Obsidian 一致）
-      var cm = view;
-      var state = cm.state;
-      var cursor = state.selection.main.head;
-      var line = state.doc.lineAt(cursor);
-      var textBefore = line.text.slice(0, cursor - line.from);
-      var rules = [
-        { regex: /(！)?【【$/, replace: function(m) { return m[1] ? '![[' : '[['; } },
-        { regex: /】】$/, replace: function() { return ']]'; } },
-      ];
-      for (var i = 0; i < rules.length; i++) {
-        var match = textBefore.match(rules[i].regex);
-        if (match) {
-          var replaceText = rules[i].replace(match);
-          var from = cursor - match[0].length;
-          cm.dispatch({
-            changes: { from: from, to: cursor, insert: replaceText },
-            selection: { anchor: from + replaceText.length },
-          });
-          break;
-        }
-      }
-    },
+        expandText() { },
     };
     return mockEditor;
 }
@@ -475,89 +450,355 @@ function buildDynamicExtensions(mockApp, mockEditor, view, editorEl, opts, deps)
     }
     return exts;
 }
+// ─── 链接点击处理 ───
+function setupLinkClickHandler(view, editorEl, opts, be) {
+    editorEl.addEventListener('click', (e) => {
+        const target = e.target;
+        if (!target || !target.closest)
+            return;
+        // 内部链接：[[link]] 渲染后有 .internal-link 或 .cm-hmd-internal-link
+        const internalLink = target.closest('.internal-link, .cm-hmd-internal-link');
+        if (internalLink) {
+            e.preventDefault();
+            e.stopPropagation();
+            const linkText = internalLink.getAttribute('data-href')
+                || internalLink.getAttribute('href')
+                || internalLink.textContent?.trim() || '';
+            if (linkText) {
+                if (opts.onLinkClick) {
+                    opts.onLinkClick(linkText, opts.filePath || '');
+                }
+                else {
+                    be.openFile(linkText);
+                }
+            }
+            return;
+        }
+        // 外部链接：[text](url) 渲染后有 .external-link
+        const externalLink = target.closest('.external-link');
+        if (externalLink) {
+            const href = externalLink.getAttribute('href') || externalLink.getAttribute('data-href') || '';
+            if (href && /^https?:|^mailto:/.test(href)) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (opts.onExternalLinkClick) {
+                    opts.onExternalLinkClick(href);
+                }
+                else {
+                    window.open(href, '_blank');
+                }
+                return;
+            }
+        }
+        // Fallback：.cm-underline 内的链接
+        const underline = target.closest('.cm-underline');
+        if (underline) {
+            const linkParent = underline.closest('.cm-hmd-internal-link');
+            if (linkParent) {
+                e.preventDefault();
+                e.stopPropagation();
+                const pos = view.posAtDOM(underline);
+                const linkContent = extractLinkAtPos(view, pos);
+                if (linkContent) {
+                    if (opts.onLinkClick) {
+                        opts.onLinkClick(linkContent, opts.filePath || '');
+                    }
+                    else {
+                        be.openFile(linkContent);
+                    }
+                }
+                return;
+            }
+            const extParent = underline.closest('.cm-link');
+            if (extParent) {
+                const urlEl = extParent.parentElement?.querySelector('.cm-url, .cm-string');
+                if (urlEl) {
+                    const url = urlEl.textContent?.replace(/^\(|\)$/g, '') || '';
+                    if (/^https?:/.test(url)) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (opts.onExternalLinkClick) {
+                            opts.onExternalLinkClick(url);
+                        }
+                        else {
+                            window.open(url, '_blank');
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+function extractLinkAtPos(view, pos) {
+    const doc = view.state.doc.toString();
+    const before = doc.lastIndexOf('[[', pos);
+    if (before !== -1 && before >= pos - 200) {
+        const after = doc.indexOf(']]', before + 2);
+        if (after !== -1 && after < pos + 200) {
+            const content = doc.slice(before + 2, after);
+            const pipeIdx = content.indexOf('|');
+            return pipeIdx !== -1 ? content.slice(0, pipeIdx) : content;
+        }
+    }
+    return null;
+}
+// ─── 中文括号自动转换 ───
+function setupExpandText(view) {
+    const { EditorView, StateEffect } = window.__cm6;
+    const rules = [
+        { regex: /(！)?【【$/, replace: (m) => m[1] ? '![[' : '[[' },
+        { regex: /】】$/, replace: () => ']]' },
+    ];
+    const listener = EditorView.updateListener.of((update) => {
+        if (!update.docChanged)
+            return;
+        // 只在用户输入时触发
+        const isUserInput = update.transactions.some((tr) => tr.isUserEvent('input'));
+        if (!isUserInput)
+            return;
+        const state = update.state;
+        const cursor = state.selection.main.head;
+        const line = state.doc.lineAt(cursor);
+        const textBefore = line.text.slice(0, cursor - line.from);
+        for (const rule of rules) {
+            const match = textBefore.match(rule.regex);
+            if (match) {
+                const replaceText = rule.replace(match);
+                const from = cursor - match[0].length;
+                setTimeout(() => {
+                    view.dispatch({
+                        changes: { from, to: cursor, insert: replaceText },
+                        selection: { anchor: from + replaceText.length },
+                    });
+                }, 0);
+                break;
+            }
+        }
+    });
+    view.dispatch({ effects: StateEffect.appendConfig.of(listener) });
+}
+// ─── 补全注册 ───
+function setupSuggest(view, config) {
+    const { EditorView, StateEffect } = window.__cm6;
+    let suggestEl = null;
+    let suggestItems = [];
+    let selectedIdx = 0;
+    let triggerFrom = -1;
+    let active = true;
+    function createSuggestEl() {
+        if (suggestEl)
+            return suggestEl;
+        suggestEl = document.createElement('div');
+        suggestEl.className = 'md-lp-suggest';
+        suggestEl.style.cssText = 'position:fixed;z-index:1000;background:var(--background-secondary,#252526);border:1px solid var(--background-modifier-border,#454545);border-radius:4px;max-height:200px;overflow-y:auto;min-width:200px;box-shadow:0 2px 8px rgba(0,0,0,0.3);font-size:13px;display:none;';
+        document.body.appendChild(suggestEl);
+        suggestEl.addEventListener('mousedown', (e) => e.preventDefault());
+        suggestEl.addEventListener('click', (e) => {
+            const itemEl = e.target.closest('[data-idx]');
+            if (itemEl) {
+                acceptSuggestion(parseInt(itemEl.getAttribute('data-idx')));
+            }
+        });
+        return suggestEl;
+    }
+    function showSuggest(coords, items) {
+        const el = createSuggestEl();
+        suggestItems = items;
+        selectedIdx = 0;
+        el.innerHTML = items.map((item, i) => `<div data-idx="${i}" style="padding:4px 8px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;${i === 0 ? 'background:var(--background-modifier-hover,#04395e);' : ''}">${escapeHtml(item.label)}</div>`).join('');
+        el.style.left = coords.left + 'px';
+        el.style.top = (coords.bottom + 2) + 'px';
+        el.style.display = 'block';
+    }
+    function hideSuggest() {
+        if (suggestEl)
+            suggestEl.style.display = 'none';
+        suggestItems = [];
+        triggerFrom = -1;
+    }
+    function updateSelection(idx) {
+        if (!suggestEl)
+            return;
+        selectedIdx = Math.max(0, Math.min(idx, suggestItems.length - 1));
+        const items = suggestEl.querySelectorAll('[data-idx]');
+        items.forEach((el, i) => {
+            el.style.background = i === selectedIdx ? 'var(--background-modifier-hover,#04395e)' : '';
+        });
+        items[selectedIdx]?.scrollIntoView({ block: 'nearest' });
+    }
+    function acceptSuggestion(idx) {
+        if (idx < 0 || idx >= suggestItems.length)
+            return;
+        const item = suggestItems[idx];
+        const cursor = view.state.selection.main.head;
+        const insertText = item.insertText + (config.suffix || '');
+        view.dispatch({
+            changes: { from: triggerFrom, to: cursor, insert: insertText },
+            selection: { anchor: triggerFrom + insertText.length },
+        });
+        hideSuggest();
+        view.focus();
+        if (config.onAccept)
+            config.onAccept(item);
+    }
+    // 监听文档/选区变更
+    const listener = EditorView.updateListener.of((update) => {
+        if (!active)
+            return;
+        if (!update.docChanged && !update.selectionSet)
+            return;
+        const state = update.state;
+        const cursor = state.selection.main.head;
+        const line = state.doc.lineAt(cursor);
+        const textBefore = line.text.slice(0, cursor - line.from);
+        const match = textBefore.match(config.trigger);
+        if (!match) {
+            hideSuggest();
+            return;
+        }
+        const query = match[1] || '';
+        triggerFrom = cursor - query.length;
+        const result = config.getSuggestions(query);
+        const handleItems = (items) => {
+            if (items.length === 0) {
+                hideSuggest();
+                return;
+            }
+            let coords = update.view.coordsAtPos(cursor);
+            if (!coords) {
+                const sel = window.getSelection();
+                if (sel && sel.rangeCount > 0) {
+                    const rect = sel.getRangeAt(0).getBoundingClientRect();
+                    if (rect.height > 0)
+                        coords = { left: rect.left, bottom: rect.bottom };
+                }
+                if (!coords) {
+                    const cursorEl = update.view.dom.querySelector('.cm-cursor');
+                    if (cursorEl) {
+                        const r = cursorEl.getBoundingClientRect();
+                        coords = { left: r.left, bottom: r.bottom };
+                    }
+                    else {
+                        const r = update.view.dom.getBoundingClientRect();
+                        coords = { left: r.left + 50, bottom: r.top + 30 };
+                    }
+                }
+            }
+            showSuggest(coords, items);
+        };
+        if (result instanceof Promise) {
+            result.then(handleItems);
+        }
+        else {
+            handleItems(result);
+        }
+    });
+    view.dispatch({ effects: StateEffect.appendConfig.of(listener) });
+    // 键盘拦截（capture phase）
+    const keyHandler = (e) => {
+        if (!suggestEl || suggestEl.style.display === 'none')
+            return;
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            e.stopPropagation();
+            updateSelection(selectedIdx + 1);
+        }
+        else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            e.stopPropagation();
+            updateSelection(selectedIdx - 1);
+        }
+        else if (e.key === 'Enter' || e.key === 'Tab') {
+            e.preventDefault();
+            e.stopPropagation();
+            acceptSuggestion(selectedIdx);
+        }
+        else if (e.key === 'Escape') {
+            e.preventDefault();
+            e.stopPropagation();
+            hideSuggest();
+        }
+    };
+    view.dom.addEventListener('keydown', keyHandler, true);
+    // 返回取消注册函数
+    return () => {
+        active = false;
+        view.dom.removeEventListener('keydown', keyHandler, true);
+        if (suggestEl) {
+            suggestEl.remove();
+            suggestEl = null;
+        }
+    };
+}
+function escapeHtml(text) {
+    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
 
 
 // ─── PostMessage 桥接 ───
-/**
- * md-annotate webview 入口
- * 
- * 职责：
- * 1. 通过 postMessage 桥接 EditorBackend 到 extension 端
- * 2. 初始化 md-live-preview 编辑器
- * 3. 处理批注交互（选中文本 → 弹出批注框）
- */
 
-// vscodeApi already acquired above
-
-// ─── PostMessage 桥接 ───
-
-let requestId = 0;
-const pendingRequests = new Map();
+var requestId = 0;
+var pendingRequests = new Map();
 
 function rpcCall(method, params) {
-  return new Promise((resolve, reject) => {
-    const id = ++requestId;
-    pendingRequests.set(id, { resolve, reject });
-    vscodeApi.postMessage({ type: 'rpc', id, method, params });
-    // 超时 10s
-    setTimeout(() => {
+  return new Promise(function(resolve, reject) {
+    var id = ++requestId;
+    pendingRequests.set(id, { resolve: resolve, reject: reject });
+    vscodeApi.postMessage({ type: 'rpc', id: id, method: method, params: params });
+    setTimeout(function() {
       if (pendingRequests.has(id)) {
         pendingRequests.delete(id);
-        reject(new Error(`RPC timeout: ${method}`));
+        reject(new Error('RPC timeout: ' + method));
       }
     }, 10000);
   });
 }
 
-// ─── EditorBackend 实现（通过 RPC 代理到 extension） ───
+// ─── EditorBackend（通过 RPC 代理到 extension）───
 
-const backend = {
+var linkIndex = new Map();
+var resourceBaseUri = '';
+
+var backend = {
   async listLinkTargets() {
     return rpcCall('listLinkTargets', {});
   },
   resolveLinkPath(linktext, sourcePath) {
-    // 同步方法——使用预加载的索引
     return linkIndex.get(linktext) || linkIndex.get(linktext + '.md') || null;
   },
   getResourceUrl(path) {
-    // 使用 extension 预传入的 resourceBaseUri
     return resourceBaseUri + '/' + encodeURIComponent(path);
   },
   async readFile(path) {
-    return rpcCall('readFile', { path });
+    return rpcCall('readFile', { path: path });
   },
   openFile(path) {
-    vscodeApi.postMessage({ type: 'rpc', id: 0, method: 'openFile', params: { path } });
+    vscodeApi.postMessage({ type: 'rpc', id: 0, method: 'openFile', params: { path: path } });
   },
   async saveAttachment(name, data) {
-    // ArrayBuffer → base64
-    const bytes = new Uint8Array(data);
-    let binary = '';
-    for (let i = 0; i < bytes.length; i++) {
-      binary += String.fromCharCode(bytes[i]);
-    }
-    const base64 = btoa(binary);
-    return rpcCall('saveAttachment', { name, base64 });
+    var bytes = new Uint8Array(data);
+    var binary = '';
+    for (var i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    var base64 = btoa(binary);
+    return rpcCall('saveAttachment', { name: name, base64: base64 });
   },
 };
 
-// 链接索引（预加载，用于同步 resolveLinkPath）
-let linkIndex = new Map();
-let resourceBaseUri = '';
+// ─── 状态 ───
+
+var editor = null;
+var currentFilePath = '';
+var humanAnnotations = [];
+var aiAnnotations = [];
+var unregisterSuggest = null;
 
 // ─── 消息处理 ───
 
-let editor = null;
-let currentFilePath = '';
-let annotationMode = false;
-let humanAnnotations = [];
-let aiAnnotations = [];
-
-window.addEventListener('message', (event) => {
-  const msg = event.data;
+window.addEventListener('message', function(event) {
+  var msg = event.data;
   switch (msg.type) {
     case 'rpcResult': {
-      const pending = pendingRequests.get(msg.id);
+      var pending = pendingRequests.get(msg.id);
       if (pending) {
         pendingRequests.delete(msg.id);
         if (msg.error) pending.reject(new Error(msg.error));
@@ -568,11 +809,10 @@ window.addEventListener('message', (event) => {
     case 'init': {
       currentFilePath = msg.filePath || '';
       resourceBaseUri = msg.resourceBaseUri || '';
-      linkIndex = new Map((msg.linkTargets || []).map(t => [t.name, t.path]));
-      // 也加入路径作为 key
-      (msg.linkTargets || []).forEach(t => {
+      linkIndex = new Map((msg.linkTargets || []).map(function(t) { return [t.name, t.path]; }));
+      (msg.linkTargets || []).forEach(function(t) {
         linkIndex.set(t.path, t.path);
-        if (t.aliases) t.aliases.forEach(a => linkIndex.set(a, t.path));
+        if (t.aliases) t.aliases.forEach(function(a) { linkIndex.set(a, t.path); });
       });
       initEditor(msg.doc || '', msg.filePath || 'untitled.md');
       break;
@@ -581,7 +821,6 @@ window.addEventListener('message', (event) => {
       humanAnnotations = msg.humanAnnotations || [];
       aiAnnotations = msg.aiAnnotations || [];
       renderAnnotationGutter();
-      highlightAnnotatedText();
       break;
     }
     case 'setDoc': {
@@ -589,10 +828,10 @@ window.addEventListener('message', (event) => {
       break;
     }
     case 'updateLinkIndex': {
-      linkIndex = new Map((msg.linkTargets || []).map(t => [t.name, t.path]));
-      (msg.linkTargets || []).forEach(t => {
+      linkIndex = new Map((msg.linkTargets || []).map(function(t) { return [t.name, t.path]; }));
+      (msg.linkTargets || []).forEach(function(t) {
         linkIndex.set(t.path, t.path);
-        if (t.aliases) t.aliases.forEach(a => linkIndex.set(a, t.path));
+        if (t.aliases) t.aliases.forEach(function(a) { linkIndex.set(a, t.path); });
       });
       break;
     }
@@ -601,35 +840,49 @@ window.addEventListener('message', (event) => {
 
 // ─── 编辑器初始化 ───
 
-async function initEditor(doc, filePath) {
-  try {
-  const container = document.getElementById('editor-container');
+function initEditor(doc, filePath) {
+  var container = document.getElementById('editor-container');
   if (!container) return;
 
+  try {
+    editor = createEditor(container, {
+      doc: doc,
+      filePath: filePath,
+      theme: document.body.classList.contains('vscode-light') ? 'light' : 'dark',
+      onChange: function(newDoc) {
+        vscodeApi.postMessage({ type: 'docChanged', doc: newDoc });
+      },
+      onSave: function(newDoc) {
+        vscodeApi.postMessage({ type: 'save', doc: newDoc });
+      },
+      onLinkClick: function(linktext) {
+        vscodeApi.postMessage({ type: 'rpc', id: 0, method: 'openFile', params: { path: linktext } });
+      },
+      onExternalLinkClick: function(url) {
+        vscodeApi.postMessage({ type: 'rpc', id: 0, method: 'openExternal', params: { url: url } });
+      },
+    }, backend);
 
-  editor = createEditor(container, {
-    doc,
-    filePath,
-    theme: document.body.classList.contains('vscode-light') ? 'light' : 'dark',
-    onChange(newDoc) {
-      vscodeApi.postMessage({ type: 'docChanged', doc: newDoc });
-    },
-    onSave(newDoc) {
-      vscodeApi.postMessage({ type: 'save', doc: newDoc });
-    },
-  }, backend);
+    // 注册 [[ 链接补全
+    unregisterSuggest = editor.registerSuggest({
+      trigger: /\[\[([^\]]*)$/,
+      getSuggestions: function(query) {
+        var q = query.toLowerCase();
+        var filtered = [];
+        linkIndex.forEach(function(path, name) {
+          if (name.toLowerCase().includes(q) || path.toLowerCase().includes(q)) {
+            if (!filtered.some(function(f) { return f.insertText === path; })) {
+              filtered.push({ label: path, insertText: path });
+            }
+          }
+        });
+        return filtered.slice(0, 20);
+      },
+      suffix: ']]',
+    });
 
-  // ready 消息已移动到文件末尾，避免 init 死锁
-
-  // 设置批注交互
-  setupAnnotationInteraction(container);
-  
-  // ─── [[ 链接补全 ───
-  setupLinkCompletion(editor.view);
-  // ─── 链接点击处理 ───
-  setupLinkClick(editor.view);
-
-
+    // 设置批注交互
+    setupAnnotationInteraction(container);
   } catch(e) {
     console.error('[md-annotate] initEditor failed:', e);
     document.getElementById('editor-container').textContent = 'Editor init error: ' + e.message;
@@ -639,95 +892,80 @@ async function initEditor(doc, filePath) {
 // ─── 批注交互 ───
 
 function setupAnnotationInteraction(container) {
-  container.addEventListener('contextmenu', (e) => {
+  container.addEventListener('contextmenu', function(e) {
     if (!editor) return;
-    const sel = editor.getSelection();
+    var sel = editor.getSelection();
     if (!sel || sel.trim().length === 0) return;
-
     e.preventDefault();
     showAnnotationPopover(e, sel);
   });
 }
 
 function showAnnotationPopover(event, selectedText) {
-  // 移除已有 popover
-  const existing = document.getElementById('annotation-popover');
+  var existing = document.getElementById('annotation-popover');
   if (existing) existing.remove();
 
-  const popover = document.createElement('div');
+  var popover = document.createElement('div');
   popover.id = 'annotation-popover';
   popover.className = 'annotation-popover visible';
-  popover.innerHTML = `
-    <div class="popover-header">
-      批注选中的文本：
-      <span class="selected-preview">${escapeHtml(selectedText.length > 50 ? selectedText.slice(0, 50) + '…' : selectedText)}</span>
-    </div>
-    <textarea id="annotation-input" placeholder="写下你的批注..."></textarea>
-    <div class="popover-actions">
-      <button class="btn-cancel" id="btn-cancel-annotation">取消</button>
-      <button class="btn-primary" id="btn-submit-annotation">添加</button>
-    </div>
-    <div class="hint">Ctrl+Enter 提交 · Esc 取消</div>
-  `;
+  popover.innerHTML =
+    '<div class="popover-header">批注选中的文本：<span class="selected-preview">' +
+    escapeHtmlLocal(selectedText.length > 50 ? selectedText.slice(0, 50) + '…' : selectedText) +
+    '</span></div>' +
+    '<textarea id="annotation-input" placeholder="写下你的批注..."></textarea>' +
+    '<div class="popover-actions">' +
+    '<button class="btn-cancel" id="btn-cancel-annotation">取消</button>' +
+    '<button class="btn-primary" id="btn-submit-annotation">添加</button>' +
+    '</div>' +
+    '<div class="hint">Ctrl+Enter 提交 · Esc 取消</div>';
 
-  // 定位
-  const contentArea = document.getElementById('main-area');
-  const rect = contentArea.getBoundingClientRect();
-  popover.style.left = Math.min(event.clientX - rect.left, rect.width - 360) + 'px';
+  var contentArea = document.getElementById('main-area');
+  var rect = contentArea.getBoundingClientRect();
+  popover.style.left = Math.min(event.clientX - rect.left, rect.width - 340) + 'px';
   popover.style.top = (event.clientY - rect.top + 8) + 'px';
-
   contentArea.appendChild(popover);
 
-  const textarea = document.getElementById('annotation-input');
-  setTimeout(() => textarea.focus(), 30);
+  var textarea = document.getElementById('annotation-input');
+  setTimeout(function() { textarea.focus(); }, 30);
 
-  // 事件
-  document.getElementById('btn-submit-annotation').addEventListener('click', () => {
+  document.getElementById('btn-submit-annotation').addEventListener('click', function() {
     submitAnnotation(selectedText, textarea.value.trim());
   });
-  document.getElementById('btn-cancel-annotation').addEventListener('click', () => {
+  document.getElementById('btn-cancel-annotation').addEventListener('click', function() {
     popover.remove();
   });
-  textarea.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-      submitAnnotation(selectedText, textarea.value.trim());
-    }
+  textarea.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) submitAnnotation(selectedText, textarea.value.trim());
     if (e.key === 'Escape') popover.remove();
   });
-
-  // 点击外部关闭
-  setTimeout(() => {
+  setTimeout(function() {
     document.addEventListener('mousedown', function handler(e) {
-      if (!popover.contains(e.target)) {
-        popover.remove();
-        document.removeEventListener('mousedown', handler);
-      }
+      if (!popover.contains(e.target)) { popover.remove(); document.removeEventListener('mousedown', handler); }
     });
   }, 100);
 }
 
 function submitAnnotation(selectedText, content) {
   if (!content) return;
-  const anchor = {
+  var anchor = {
     type: 'text-range',
     start_text: selectedText.slice(0, 30),
     end_text: selectedText.length > 30 ? selectedText.slice(-30) : selectedText,
   };
-  vscodeApi.postMessage({ type: 'addAnnotation', anchor, content, tags: [] });
-  const popover = document.getElementById('annotation-popover');
+  vscodeApi.postMessage({ type: 'addAnnotation', anchor: anchor, content: content, tags: [] });
+  var popover = document.getElementById('annotation-popover');
   if (popover) popover.remove();
 }
 
-// ─── 批注渲染 ───
+// ─── 批注侧栏 ───
 
 function renderAnnotationGutter() {
-  const gutter = document.getElementById('annotation-gutter');
+  var gutter = document.getElementById('annotation-gutter');
   if (!gutter) return;
 
-  const allAnns = [
-    ...humanAnnotations.map(a => ({ ...a, _authorType: 'human' })),
-    ...aiAnnotations.map(a => ({ ...a, _authorType: 'ai' })),
-  ];
+  var allAnns = []
+    .concat(humanAnnotations.map(function(a) { return Object.assign({}, a, { _authorType: 'human' }); }))
+    .concat(aiAnnotations.map(function(a) { return Object.assign({}, a, { _authorType: 'ai' }); }));
 
   if (allAnns.length === 0) {
     gutter.innerHTML = '<div class="gutter-empty">选中文本，右键添加批注</div>';
@@ -735,50 +973,23 @@ function renderAnnotationGutter() {
   }
 
   gutter.innerHTML = allAnns
-    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-    .map(ann => `
-      <div class="annotation-card ${ann._authorType} ${ann.resolved ? 'resolved' : ''}" data-ann-id="${ann.id}" data-anchor='${JSON.stringify(ann.anchor)}'>
-        <div class="card-header">
-          <span>${ann._authorType === 'human' ? '👤' : '🤖'}</span>
-          <span class="card-date">${formatDate(ann.created_at)}</span>
-          ${ann._authorType === 'human' ? `
-          <div class="card-actions">
-            <button data-action="resolve" data-id="${ann.id}" title="已解决">✓</button>
-            <button data-action="delete" data-id="${ann.id}" title="删除">✕</button>
-          </div>` : ''}
-        </div>
-        <div class="card-content">${escapeHtml(ann.content)}</div>
-        <div class="card-anchor">${formatAnchor(ann.anchor)}</div>
-      </div>
-    `).join('');
+    .sort(function(a, b) { return new Date(b.created_at) - new Date(a.created_at); })
+    .map(function(ann) {
+      return '<div class="annotation-card ' + ann._authorType + ' ' + (ann.resolved ? 'resolved' : '') + '" data-ann-id="' + ann.id + '" data-anchor=\'' + JSON.stringify(ann.anchor).replace(/'/g, '&#39;') + '\'>' +
+        '<div class="card-header">' +
+        '<span>' + (ann._authorType === 'human' ? '👤' : '🤖') + '</span>' +
+        '<span class="card-date">' + formatDate(ann.created_at) + '</span>' +
+        (ann._authorType === 'human' ? '<div class="card-actions"><button data-action="resolve" data-id="' + ann.id + '" title="已解决">✓</button><button data-action="delete" data-id="' + ann.id + '" title="删除">✕</button></div>' : '') +
+        '</div>' +
+        '<div class="card-content">' + escapeHtmlLocal(ann.content) + '</div>' +
+        '<div class="card-anchor">' + formatAnchor(ann.anchor) + '</div>' +
+        '</div>';
+    }).join('');
 }
 
-function highlightAnnotatedText() {
-  // 在 CM6 中实现高亮需要 StateField——简化方案：通过 CSS class 标记
-  // 这里通过 postMessage 通知 extension 当前有哪些 annotations 对应的文本范围
-  // 实际高亮在 CM6 层比较复杂，先用 gutter 显示
-}
+// ─── Gutter 事件代理 ───
 
-// ─── 工具函数 ───
-
-function formatDate(iso) {
-  const d = new Date(iso);
-  return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
-
-function formatAnchor(anchor) {
-  if (anchor.type === 'text-range') return '"' + escapeHtml(anchor.start_text) + '…"';
-  if (anchor.type === 'heading') return '§ ' + escapeHtml(anchor.heading_text);
-  if (anchor.type === 'line-range') return 'L' + anchor.start_line + '–' + anchor.end_line;
-  return '';
-}
-
-function escapeHtml(text) {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-// 事件代理：gutter 上的点击操作
-(function setupGutterEvents() {
+(function() {
   var gutter = document.getElementById('annotation-gutter');
   if (!gutter) return;
   gutter.addEventListener('click', function(e) {
@@ -787,22 +998,16 @@ function escapeHtml(text) {
       e.stopPropagation();
       var action = btn.getAttribute('data-action');
       var id = btn.getAttribute('data-id');
-      if (action === 'resolve') {
-        vscodeApi.postMessage({ type: 'resolveAnnotation', id: id });
-      } else if (action === 'delete') {
-        vscodeApi.postMessage({ type: 'removeAnnotation', id: id });
-      }
+      if (action === 'resolve') vscodeApi.postMessage({ type: 'resolveAnnotation', id: id });
+      else if (action === 'delete') vscodeApi.postMessage({ type: 'removeAnnotation', id: id });
       return;
     }
-    // 点击卡片跳转到对应位置
     var card = e.target.closest('.annotation-card[data-anchor]');
     if (card && editor) {
       try {
         var anchor = JSON.parse(card.getAttribute('data-anchor'));
         jumpToAnchor(anchor);
-      } catch(err) {
-        console.warn('[md-annotate] jump failed:', err);
-      }
+      } catch(err) {}
     }
   });
 })();
@@ -812,320 +1017,40 @@ function jumpToAnchor(anchor) {
   var view = editor.view;
   var doc = view.state.doc.toString();
   var pos = -1;
-
-  if (anchor.type === 'text-range' && anchor.start_text) {
-    pos = doc.indexOf(anchor.start_text);
-  } else if (anchor.type === 'heading' && anchor.heading_text) {
-    pos = doc.indexOf(anchor.heading_text);
-  } else if (anchor.type === 'line-range' && anchor.start_line) {
+  if (anchor.type === 'text-range' && anchor.start_text) pos = doc.indexOf(anchor.start_text);
+  else if (anchor.type === 'heading' && anchor.heading_text) pos = doc.indexOf(anchor.heading_text);
+  else if (anchor.type === 'line-range' && anchor.start_line) {
     var line = Math.min(anchor.start_line, view.state.doc.lines);
     pos = view.state.doc.line(line).from;
   }
-
   if (pos >= 0) {
-    view.dispatch({
-      selection: { anchor: pos },
-      scrollIntoView: true,
-    });
+    view.dispatch({ selection: { anchor: pos }, scrollIntoView: true });
     view.focus();
   }
 }
 
+// ─── 工具函数 ───
 
-// ─── 链接点击处理 ───
-function setupLinkClick(view) {
-  view.dom.addEventListener('click', function(e) {
-    var target = e.target;
-    if (!target || !target.closest) return;
-
-    // 内部链接：[[link]] — 渲染后有 .cm-hmd-internal-link 和 .internal-link class
-    var internalLink = target.closest('.internal-link, .cm-hmd-internal-link');
-    if (internalLink) {
-      e.preventDefault();
-      e.stopPropagation();
-      var linkText = internalLink.getAttribute('data-href') 
-        || internalLink.getAttribute('href')
-        || internalLink.textContent.trim();
-      if (linkText) {
-        backend.openFile(linkText);
-      }
-      return;
-    }
-
-    // 外部链接：[text](url) — 渲染后有 .external-link 或 a[href]
-    var externalLink = target.closest('.external-link, a.cm-underline[href], .cm-url');
-    if (externalLink) {
-      var href = externalLink.getAttribute('href') || externalLink.getAttribute('data-href');
-      if (!href) {
-        // 尝试从 .cm-url 中提取
-        href = externalLink.textContent.trim();
-      }
-      if (href && (href.startsWith('http://') || href.startsWith('https://') || href.startsWith('mailto:'))) {
-        e.preventDefault();
-        e.stopPropagation();
-        vscodeApi.postMessage({ type: 'rpc', id: 0, method: 'openExternal', params: { url: href } });
-        return;
-      }
-    }
-
-    // Fallback: 检查点击的是否是带下划线的链接文本
-    var underline = target.closest('.cm-underline');
-    if (underline) {
-      var linkParent = underline.closest('.cm-hmd-internal-link');
-      if (linkParent) {
-        e.preventDefault();
-        e.stopPropagation();
-        // 从 CM6 syntax tree 获取链接文本
-        var pos = view.posAtDOM(underline);
-        var linkContent = extractLinkAtPos(view, pos);
-        if (linkContent) {
-          backend.openFile(linkContent);
-        }
-        return;
-      }
-      // 外部链接的下划线
-      var extParent = underline.closest('.cm-link');
-      if (extParent) {
-        var urlEl = extParent.parentElement && extParent.parentElement.querySelector('.cm-url, .cm-string');
-        if (urlEl) {
-          var url = urlEl.textContent.replace(/^\(|\)$/g, '');
-          if (url.startsWith('http://') || url.startsWith('https://')) {
-            e.preventDefault();
-            e.stopPropagation();
-            vscodeApi.postMessage({ type: 'rpc', id: 0, method: 'openExternal', params: { url: url } });
-            return;
-          }
-        }
-      }
-    }
-  });
+function formatDate(iso) {
+  var d = new Date(iso);
+  return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+function formatAnchor(anchor) {
+  if (anchor.type === 'text-range') return '"' + escapeHtmlLocal(anchor.start_text) + '…"';
+  if (anchor.type === 'heading') return '§ ' + escapeHtmlLocal(anchor.heading_text);
+  if (anchor.type === 'line-range') return 'L' + anchor.start_line + '–' + anchor.end_line;
+  return '';
+}
+function escapeHtmlLocal(text) {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-function extractLinkAtPos(view, pos) {
-  // 在文档中找到 pos 附近的 [[ ... ]] 或 [text](url) 
-  var doc = view.state.doc.toString();
-  // 找 [[ 开始
-  var before = doc.lastIndexOf('[[', pos);
-  if (before !== -1 && before >= pos - 200) {
-    var after = doc.indexOf(']]', before + 2);
-    if (after !== -1 && after < pos + 200) {
-      var content = doc.slice(before + 2, after);
-      // 处理 [[path|alias]] 格式
-      var pipeIdx = content.indexOf('|');
-      return pipeIdx !== -1 ? content.slice(0, pipeIdx) : content;
-    }
-  }
-  return null;
-}
-
-// ─── [[ 链接自动补全 ───
-function setupLinkCompletion(view) {
-  var ViewPlugin = window.__cm6.ViewPlugin;
-  var EditorView = window.__cm6.EditorView;
-
-  var suggestEl = null;
-  var suggestItems = [];
-  var selectedIdx = 0;
-  var triggerPos = -1;
-
-  function createSuggestEl() {
-    if (suggestEl) return suggestEl;
-    suggestEl = document.createElement('div');
-    suggestEl.className = 'link-suggest';
-    suggestEl.style.cssText = 'position:fixed;z-index:1000;background:var(--vscode-editorSuggestWidget-background,#252526);border:1px solid var(--vscode-editorSuggestWidget-border,#454545);border-radius:4px;max-height:200px;overflow-y:auto;min-width:200px;box-shadow:0 2px 8px rgba(0,0,0,0.3);font-size:13px;display:none;';
-    document.body.appendChild(suggestEl);
-    return suggestEl;
-  }
-
-  function showSuggest(coords, items) {
-    var el = createSuggestEl();
-    suggestItems = items;
-    selectedIdx = 0;
-    el.innerHTML = items.map(function(item, i) {
-      return '<div class="link-suggest-item' + (i === 0 ? ' selected' : '') + '" data-idx="' + i + '" style="padding:4px 8px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escapeHtml(item.path) + '</div>';
-    }).join('');
-    el.style.left = coords.left + 'px';
-    el.style.top = (coords.bottom + 2) + 'px';
-    el.style.display = 'block';
-
-    // 点击选择
-    el.onclick = function(e) {
-      var itemEl = e.target.closest('.link-suggest-item');
-      if (itemEl) {
-        var idx = parseInt(itemEl.getAttribute('data-idx'));
-        acceptSuggestion(view, idx);
-      }
-    };
-  }
-
-  function hideSuggest() {
-    if (suggestEl) suggestEl.style.display = 'none';
-    suggestItems = [];
-    triggerPos = -1;
-  }
-
-  function updateSelection(idx) {
-    if (!suggestEl) return;
-    selectedIdx = Math.max(0, Math.min(idx, suggestItems.length - 1));
-    var items = suggestEl.querySelectorAll('.link-suggest-item');
-    items.forEach(function(el, i) {
-      el.style.background = i === selectedIdx ? 'var(--vscode-list-activeSelectionBackground, #04395e)' : '';
-      el.style.color = i === selectedIdx ? 'var(--vscode-list-activeSelectionForeground, #fff)' : '';
-    });
-    if (items[selectedIdx]) items[selectedIdx].scrollIntoView({ block: 'nearest' });
-  }
-
-  function acceptSuggestion(view, idx) {
-    if (idx < 0 || idx >= suggestItems.length) return;
-    var item = suggestItems[idx];
-    // 替换从 [[ 之后到光标位置的文本，插入 path]]
-    var cursor = view.state.selection.main.head;
-    var insertText = item.path + ']]';
-    view.dispatch({
-      changes: { from: triggerPos + 2, to: cursor, insert: insertText },
-      selection: { anchor: triggerPos + 2 + insertText.length },
-    });
-    hideSuggest();
-    view.focus();
-  }
-
-  // 使用 EditorView.updateListener 监听文档/选区变更
-  var EditorView = window.__cm6.EditorView;
-  var StateEffect = window.__cm6.StateEffect;
-
-  var listener = EditorView.updateListener.of(function(update) {
-    if (!update.docChanged && !update.selectionSet) return;
-    var state = update.state;
-    var cursor = state.selection.main.head;
-    var line = state.doc.lineAt(cursor);
-    var textBefore = line.text.slice(0, cursor - line.from);
-
-    // 使用 Obsidian 的触发逻辑：[[ 存在，且最后一个 ] 在 [[ 之前
-    var bracketIdx = textBefore.lastIndexOf('[[');
-    var lastClose = textBefore.lastIndexOf(']');
-    if (bracketIdx === -1 || lastClose > bracketIdx) {
-      hideSuggest();
-      return;
-    }
-    var query = textBefore.slice(bracketIdx + 2).toLowerCase();
-    triggerPos = line.from + bracketIdx;
-
-    // 过滤匹配项
-    var filtered = [];
-    linkIndex.forEach(function(path, name) {
-      if (name.toLowerCase().includes(query) || path.toLowerCase().includes(query)) {
-        if (!filtered.some(function(f) { return f.path === path; })) {
-          filtered.push({ name: name, path: path });
-        }
-      }
-    });
-    filtered = filtered.slice(0, 20);
-
-    if (filtered.length === 0) {
-      hideSuggest();
-      return;
-    }
-
-    // 获取光标坐标
-    var coords = update.view.coordsAtPos(cursor);
-    if (!coords) {
-      var sel = window.getSelection();
-      if (sel && sel.rangeCount > 0) {
-        var range = sel.getRangeAt(0);
-        var rect = range.getBoundingClientRect();
-        if (rect.width > 0 || rect.height > 0) {
-          coords = { left: rect.left, bottom: rect.bottom };
-        }
-      }
-      if (!coords) {
-        var cursorEl = update.view.dom.querySelector('.cm-cursor');
-        if (cursorEl) {
-          var cursorRect = cursorEl.getBoundingClientRect();
-          coords = { left: cursorRect.left, bottom: cursorRect.bottom };
-        } else {
-          var domRect = update.view.dom.getBoundingClientRect();
-          coords = { left: domRect.left + 50, bottom: domRect.top + 30 };
-        }
-      }
-    }
-    showSuggest(coords, filtered);
-  });
-
-  view.dispatch({
-    effects: StateEffect.appendConfig.of(listener),
-  });
-
-  // ─── 【【→[[ 中文括号自动转换 ───
-  var cnBracketListener = EditorView.updateListener.of(function(update) {
-    if (!update.docChanged) return;
-    // 只在用户输入时触发（非程序性修改）
-    var isUserInput = update.transactions.some(function(tr) {
-      return tr.isUserEvent('input');
-    });
-    if (!isUserInput) return;
-
-    var state = update.state;
-    var cursor = state.selection.main.head;
-    var line = state.doc.lineAt(cursor);
-    var textBefore = line.text.slice(0, cursor - line.from);
-
-    var rules = [
-      { regex: /(！)?【【$/, replace: function(m) { return m[1] ? '![[' : '[['; } },
-      { regex: /】】$/, replace: function() { return ']]'; } },
-    ];
-
-    for (var i = 0; i < rules.length; i++) {
-      var match = textBefore.match(rules[i].regex);
-      if (match) {
-        var replaceText = rules[i].replace(match);
-        var from = cursor - match[0].length;
-        // 使用 setTimeout 避免在 update 回调中直接 dispatch
-        setTimeout(function() {
-          view.dispatch({
-            changes: { from: from, to: cursor, insert: replaceText },
-            selection: { anchor: from + replaceText.length },
-          });
-        }, 0);
-        break;
-      }
-    }
-  });
-
-  view.dispatch({
-    effects: StateEffect.appendConfig.of(cnBracketListener),
-  });
-
-  // 键盘事件处理（capture phase 确保在 CM6 keymap 之前拦截）
-  view.dom.addEventListener('keydown', function(e) {
-    if (!suggestEl || suggestEl.style.display === 'none') return;
-    if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      e.stopPropagation();
-      updateSelection(selectedIdx + 1);
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      e.stopPropagation();
-      updateSelection(selectedIdx - 1);
-    } else if (e.key === 'Enter' || e.key === 'Tab') {
-      e.preventDefault();
-      e.stopPropagation();
-      acceptSuggestion(view, selectedIdx);
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      e.stopPropagation();
-      hideSuggest();
-    }
-  }, true);
-}
-
-// 切回源码模式
-window.addEventListener('switchToSource', () => {
+// ─── 切回源码模式 ───
+window.addEventListener('switchToSource', function() {
   vscodeApi.postMessage({ type: 'switchToSource' });
 });
 
-// 脚本加载完毕，通知 extension 可以发送 init 数据了
+// ─── 通知 extension 准备就绪 ───
 vscodeApi.postMessage({ type: 'ready' });
-console.log('[md-annotate] ready message sent to extension');
-
 
 })();
