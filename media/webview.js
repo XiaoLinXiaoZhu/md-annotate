@@ -551,6 +551,7 @@ window.addEventListener('message', (event) => {
         linkIndex.set(t.path, t.path);
         if (t.aliases) t.aliases.forEach(a => linkIndex.set(a, t.path));
       });
+      console.log('[md-annotate] init received, linkTargets count:', (msg.linkTargets || []).length, 'linkIndex size:', linkIndex.size);
       initEditor(msg.doc || '', msg.filePath || 'untitled.md');
       break;
     }
@@ -909,6 +910,7 @@ function setupLinkCompletion(view) {
   var suggestItems = [];
   var selectedIdx = 0;
   var triggerPos = -1;
+  console.log('[md-annotate] setupLinkCompletion called, linkIndex size:', linkIndex.size);
 
   function createSuggestEl() {
     if (suggestEl) return suggestEl;
@@ -983,6 +985,7 @@ function setupLinkCompletion(view) {
 
         // 检查是否在 [[ 之后且没有 ]]
         var bracketIdx = textBefore.lastIndexOf('[[');
+        if (bracketIdx !== -1) console.log('[md-annotate] [[ detected at', bracketIdx, 'query:', textBefore.slice(bracketIdx + 2), 'linkIndex size:', linkIndex.size);
         if (bracketIdx === -1 || textBefore.indexOf(']]', bracketIdx) !== -1) {
           hideSuggest();
           return;
@@ -1005,6 +1008,7 @@ function setupLinkCompletion(view) {
         filtered = filtered.slice(0, 20); // 最多 20 项
 
         if (filtered.length === 0) {
+          console.log('[md-annotate] no matches for query');
           hideSuggest();
           return;
         }
@@ -1012,6 +1016,7 @@ function setupLinkCompletion(view) {
         // 获取光标坐标
         var coords = update.view.coordsAtPos(cursor);
         if (coords) {
+          console.log('[md-annotate] showing suggest, items:', filtered.length, 'coords:', coords);
           showSuggest(coords, filtered);
         }
       },
@@ -1022,6 +1027,7 @@ function setupLinkCompletion(view) {
   view.dispatch({
     effects: window.__cm6.StateEffect.appendConfig.of(linkSuggestPlugin),
   });
+  console.log('[md-annotate] linkSuggestPlugin registered via appendConfig');
 
   // 键盘事件处理（上下选择、回车确认、Esc关闭）
   view.dom.addEventListener('keydown', function(e) {
