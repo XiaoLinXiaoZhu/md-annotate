@@ -103447,6 +103447,7 @@ window.require = function (m) {
         StateField: De,
         StateEffect: $e,
         Compartment: Ne,
+        Transaction: Qe,
       };
       window.__fields = { searchHighlight: If };
       window.__language = JB;

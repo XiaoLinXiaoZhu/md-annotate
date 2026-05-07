@@ -555,6 +555,21 @@ body {
 .annotation-popover .hint {
   font-size: 10px; color: var(--vscode-descriptionForeground); margin-top: 4px;
 }
+
+/* 字体覆写 */
+:root {
+  --font-monospace: "Maple Mono NF CN", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
+}
+
+/* 代码块背景加深，与普通文本区分 */
+.theme-dark .cm-s-obsidian div.HyperMD-codeblock-bg,
+.theme-dark .cm-s-obsidian div.HyperMD-codeblock-begin-bg,
+.theme-dark .cm-s-obsidian div.HyperMD-codeblock-end-bg {
+  background-color: #1a1a2e;
+}
+.theme-dark .markdown-source-view.mod-cm6 .cm-line.HyperMD-codeblock {
+  background-color: #1a1a2e;
+}
 </style>
 </head>
 <body class="theme-dark">

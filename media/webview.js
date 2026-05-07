@@ -247,27 +247,43 @@ function buildLocalExtensions(view, mockOwner, mockEditor, editorEl, opts, be, d
                     const prefix = match[0];
                     const blockquote = match[1] || '';
                     const listMarker = match[2] || '';
-                    if (!listMarker)
+                    // Neither blockquote nor list marker — let default behavior handle it
+                    if (!blockquote && !listMarker)
                         return false;
+                    // Empty line: just blockquote/list prefix with no content after
                     if (line.text.slice(prefix.length).trim() === '') {
-                        v.dispatch({ changes: { from: line.from, to: line.to, insert: '' } });
+                        v.dispatch({
+                            changes: { from: line.from, to: line.to, insert: '' },
+                            userEvent: 'input.type',
+                        });
                         return true;
                     }
-                    let newMarker = listMarker;
-                    const ordNum = match[4];
-                    if (ordNum) {
-                        const sep = match[5];
-                        newMarker = (parseInt(ordNum) + 1) + sep;
+                    if (listMarker) {
+                        // List continuation
+                        let newMarker = listMarker;
+                        const ordNum = match[4];
+                        if (ordNum) {
+                            const sep = match[5];
+                            newMarker = (parseInt(ordNum) + 1) + sep;
+                        }
+                        const checkbox = match[6] !== undefined ? '[ ] ' : '';
+                        if (checkbox)
+                            newMarker = newMarker.replace(/\[.\] $/, '');
+                        const insert = '\n' + blockquote + newMarker + checkbox;
+                        v.dispatch({
+                            changes: { from: head, insert },
+                            selection: { anchor: head + insert.length },
+                            userEvent: 'input.type',
+                        });
+                    } else {
+                        // Blockquote-only continuation
+                        const insert = '\n' + blockquote;
+                        v.dispatch({
+                            changes: { from: head, insert },
+                            selection: { anchor: head + insert.length },
+                            userEvent: 'input.type',
+                        });
                     }
-                    const checkbox = match[6] !== undefined ? '[ ] ' : '';
-                    if (checkbox)
-                        newMarker = newMarker.replace(/\[.\] $/, '');
-                    const insert = '\n' + blockquote + newMarker + checkbox;
-                    v.dispatch({
-                        changes: { from: head, insert },
-                        selection: { anchor: head + insert.length },
-                        userEvent: 'input.type',
-                    });
                     return true;
                 },
                 shift(v) { return newlineAndIndent(v); },
@@ -457,6 +473,7 @@ function setupExpandText(view) {
                     view.dispatch({
                         changes: { from, to: cursor, insert: replaceText },
                         selection: { anchor: from + replaceText.length },
+                        userEvent: 'input.type',
                     });
                 }, 0);
                 break;
@@ -524,6 +541,7 @@ function setupSuggest(view, config) {
         view.dispatch({
             changes: { from: triggerFrom, to: cursor, insert: insertText },
             selection: { anchor: triggerFrom + insertText.length },
+            userEvent: 'input.type',
         });
         hideSuggest();
         view.focus();
@@ -581,35 +599,32 @@ function setupSuggest(view, config) {
             handleItems(result);
         }
     });
-    view.dispatch({ effects: StateEffect.appendConfig.of(listener) });
-    const keyHandler = (e) => {
-        if (!suggestEl || suggestEl.style.display === 'none')
-            return;
-        if (e.key === 'ArrowDown') {
-            e.preventDefault();
-            e.stopPropagation();
-            updateSelection(selectedIdx + 1);
-        }
-        else if (e.key === 'ArrowUp') {
-            e.preventDefault();
-            e.stopPropagation();
-            updateSelection(selectedIdx - 1);
-        }
-        else if (e.key === 'Enter' || e.key === 'Tab') {
-            e.preventDefault();
-            e.stopPropagation();
-            acceptSuggestion(selectedIdx);
-        }
-        else if (e.key === 'Escape') {
-            e.preventDefault();
-            e.stopPropagation();
-            hideSuggest();
-        }
-    };
-    view.dom.addEventListener('keydown', keyHandler, true);
+    const suggestKeymap = EditorView.domEventHandlers({
+        keydown(e) {
+            if (!suggestEl || suggestEl.style.display === 'none') return false;
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                updateSelection(selectedIdx + 1);
+                return true;
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                updateSelection(selectedIdx - 1);
+                return true;
+            } else if (e.key === 'Enter' || e.key === 'Tab') {
+                e.preventDefault();
+                acceptSuggestion(selectedIdx);
+                return true;
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                hideSuggest();
+                return true;
+            }
+            return false;
+        },
+    });
+    view.dispatch({ effects: StateEffect.appendConfig.of([listener, suggestKeymap]) });
     return () => {
         active = false;
-        view.dom.removeEventListener('keydown', keyHandler, true);
         if (suggestEl) {
             suggestEl.remove();
             suggestEl = null;
@@ -628,7 +643,7 @@ function createEditor(container, options = {}, backend = {}) {
         throw new Error('md-live-preview: Obsidian runtime not loaded. ' +
             'Ensure vendor scripts are included before calling createEditor().');
     }
-    const { EditorView, EditorState, keymap, syntaxTree } = window.__cm6;
+    const { EditorView, EditorState, keymap, syntaxTree, Transaction } = window.__cm6;
     const { editor: jB, owner: WB, livePreview: KB } = window.__stateFields;
     const { inputHandler: pT, stateField: lT, keymap: fT, markdownSurround: iB } = window.__closeBrackets;
     const { base: ZB, dynamic: iN } = window.__compartments;
@@ -692,7 +707,7 @@ function createEditor(container, options = {}, backend = {}) {
     });
     view.setState(fullState);
     function forceRebuild() {
-        view.dispatch({});
+        view.dispatch({ annotations: Transaction.addToHistory.of(false) });
         const tree = syntaxTree(view.state);
         if (tree.length < view.state.doc.length) {
             setTimeout(forceRebuild, 50);

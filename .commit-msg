@@ -1,7 +1,0 @@
-chore: sync md-live-preview v1.1.0 split modules
-
-- media/editor/ updated with 8 split JS files (was 3 monolithic)
-- media/webview.js rebuilt with new modular library code
-- No API changes — createEditor interface unchanged
-
-Version: 1.1.0 → 1.2.0
