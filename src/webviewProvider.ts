@@ -31,6 +31,14 @@ export class AnnotationWebviewProvider implements vscode.WebviewViewProvider {
             this.refresh();
           }
           break;
+        case "addReply":
+          if (this.currentUri) {
+            await this.store.addReply(
+              this.currentUri, message.authorType || "human", message.annotationId, message.replyAuthorType || "human", message.content
+            );
+            this.refresh();
+          }
+          break;
         case "delete":
           if (this.currentUri) {
             await this.store.removeAnnotation(this.currentUri, "human", message.id);
@@ -74,20 +82,29 @@ Open a markdown file to see annotations.
     const items = annotations
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
       .map(
-        (ann) => `
+        (ann) => {
+          const threadHtml = ann.thread?.length
+            ? `<div class="thread">${ann.thread.map(r => 
+                `<div class="reply ${r.author_type}"><span class="reply-author">${r.author_type === 'human' ? '👤' : '🤖'}</span><span>${escapeHtml(r.content)}</span></div>`
+              ).join('')}</div>`
+            : '';
+          return `
         <div class="annotation ${ann.resolved ? "resolved" : ""} ${ann.authorType}">
           <div class="header">
             <span class="author">${ann.authorType === "human" ? "👤" : "🤖"}</span>
             <span class="date">${new Date(ann.created_at).toLocaleDateString()}</span>
             <span class="actions">
+              <button onclick="reply('${ann.id}', '${ann.authorType}')" title="回复">💬</button>
               <button onclick="resolve('${ann.id}')">✓</button>
               <button onclick="del('${ann.id}')">✕</button>
             </span>
           </div>
           <div class="anchor-info">${this.formatAnchor(ann.anchor)}</div>
           <div class="content">${escapeHtml(ann.content)}</div>
+          ${threadHtml}
           ${ann.tags?.length ? `<div class="tags">${ann.tags.map((t) => `<span class="tag">${t}</span>`).join("")}</div>` : ""}
-        </div>`
+        </div>`;
+        }
       )
       .join("");
 
@@ -108,6 +125,10 @@ Open a markdown file to see annotations.
   .content { white-space: pre-wrap; }
   .tags { margin-top: 4px; }
   .tag { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); padding: 2px 6px; border-radius: 3px; font-size: 0.8em; margin-right: 4px; }
+  .thread { margin-top: 6px; padding-left: 8px; border-left: 2px solid var(--vscode-panel-border); }
+  .reply { display: flex; gap: 4px; margin-bottom: 2px; font-size: 0.85em; }
+  .reply-author { flex-shrink: 0; }
+  .reply.ai { color: #ce93d8; }
 </style>
 </head>
 <body>
@@ -116,6 +137,12 @@ Open a markdown file to see annotations.
     const vscode = acquireVsCodeApi();
     function resolve(id) { vscode.postMessage({ type: 'resolve', id }); }
     function del(id) { vscode.postMessage({ type: 'delete', id }); }
+    function reply(annotationId, authorType) {
+      const content = prompt('输入回复内容:');
+      if (content && content.trim()) {
+        vscode.postMessage({ type: 'addReply', annotationId, authorType, replyAuthorType: 'human', content: content.trim() });
+      }
+    }
   </script>
 </body>
 </html>`;

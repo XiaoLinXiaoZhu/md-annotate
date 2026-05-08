@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
-import { AnnotationFile, Annotation, Anchor, AuthorType } from "./types";
+import { AnnotationFile, Annotation, Anchor, AuthorType, Reply } from "./types";
 
 export class AnnotationStore {
   private cache = new Map<string, AnnotationFile>();
@@ -83,6 +83,29 @@ export class AnnotationStore {
     file.annotations.push(annotation);
     await this.save(mdUri, authorType);
     return annotation;
+  }
+
+  async addReply(
+    mdUri: vscode.Uri,
+    authorType: AuthorType,
+    annotationId: string,
+    replyAuthorType: AuthorType,
+    content: string
+  ): Promise<boolean> {
+    const file = await this.load(mdUri, authorType);
+    const ann = file.annotations.find((a) => a.id === annotationId);
+    if (!ann) return false;
+    if (!ann.thread) ann.thread = [];
+    const reply: Reply = {
+      id: `rpl_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+      author_type: replyAuthorType,
+      content,
+      created_at: new Date().toISOString(),
+    };
+    ann.thread.push(reply);
+    ann.updated_at = new Date().toISOString();
+    await this.save(mdUri, authorType);
+    return true;
   }
 
   async removeAnnotation(mdUri: vscode.Uri, authorType: AuthorType, annotationId: string): Promise<boolean> {

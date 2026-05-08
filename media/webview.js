@@ -973,20 +973,37 @@ function renderAnnotationGutter() {
     .concat(aiAnnotations.map(function(a) { return Object.assign({}, a, { _authorType: 'ai' }); }));
 
   if (allAnns.length === 0) {
-    gutter.innerHTML = '<div class="gutter-empty">选中文本，右键添加批注</div>';
+    gutter.innerHTML = '<div class="gutter-empty"><div class="gutter-empty-icon">💬</div><div>选中文本后右键<br>即可添加批注</div></div>';
     return;
   }
 
   gutter.innerHTML = allAnns
     .sort(function(a, b) { return new Date(b.created_at) - new Date(a.created_at); })
     .map(function(ann) {
-      return '<div class="annotation-card ' + ann._authorType + ' ' + (ann.resolved ? 'resolved' : '') + '" data-ann-id="' + ann.id + '" data-anchor=\'' + JSON.stringify(ann.anchor).replace(/'/g, '&#39;') + '\'>' +
+      var threadHtml = '';
+      if (ann.thread && ann.thread.length > 0) {
+        threadHtml = '<div class="card-thread">' +
+          ann.thread.map(function(reply) {
+            return '<div class="thread-reply ' + reply.author_type + '">' +
+              '<span class="reply-author">' + (reply.author_type === 'human' ? '👤' : '🤖') + '</span>' +
+              '<span class="reply-content">' + escapeHtmlLocal(reply.content) + '</span>' +
+              '</div>';
+          }).join('') +
+          '</div>';
+      }
+      var replyCount = (ann.thread && ann.thread.length) || 0;
+      return '<div class="annotation-card ' + ann._authorType + ' ' + (ann.resolved ? 'resolved' : '') + '" data-ann-id="' + ann.id + '" data-author-type="' + ann._authorType + '" data-anchor=\'' + JSON.stringify(ann.anchor).replace(/'/g, '&#39;') + '\'>' +
         '<div class="card-header">' +
         '<span>' + (ann._authorType === 'human' ? '👤' : '🤖') + '</span>' +
         '<span class="card-date">' + formatDate(ann.created_at) + '</span>' +
-        (ann._authorType === 'human' ? '<div class="card-actions"><button data-action="resolve" data-id="' + ann.id + '" title="已解决">✓</button><button data-action="delete" data-id="' + ann.id + '" title="删除">✕</button></div>' : '') +
+        '<div class="card-actions">' +
+        '<button data-action="reply" data-id="' + ann.id + '" data-author="' + ann._authorType + '" title="回复">💬</button>' +
+        (ann._authorType === 'human' ? '<button data-action="resolve" data-id="' + ann.id + '" title="标记已解决">✓</button><button data-action="delete" data-id="' + ann.id + '" title="删除">✕</button>' : '<button data-action="resolve-ai" data-id="' + ann.id + '" title="标记已解决">✓</button>') +
+        '</div>' +
         '</div>' +
         '<div class="card-content">' + escapeHtmlLocal(ann.content) + '</div>' +
+        threadHtml +
+        (replyCount > 0 ? '<div class="card-thread-count">' + replyCount + ' 条回复</div>' : '') +
         '<div class="card-anchor">' + formatAnchor(ann.anchor) + '</div>' +
         '</div>';
     }).join('');
@@ -1004,11 +1021,16 @@ function renderAnnotationGutter() {
       var action = btn.getAttribute('data-action');
       var id = btn.getAttribute('data-id');
       if (action === 'resolve') vscodeApi.postMessage({ type: 'resolveAnnotation', id: id });
+      else if (action === 'resolve-ai') vscodeApi.postMessage({ type: 'resolveAnnotation', id: id });
       else if (action === 'delete') vscodeApi.postMessage({ type: 'removeAnnotation', id: id });
+      else if (action === 'reply') {
+        var authorType = btn.getAttribute('data-author') || 'human';
+        showReplyInput(id, authorType, btn.closest('.annotation-card'));
+      }
       return;
     }
     var card = e.target.closest('.annotation-card[data-anchor]');
-    if (card && editor) {
+    if (card && editor && !e.target.closest('.reply-input-area')) {
       try {
         var anchor = JSON.parse(card.getAttribute('data-anchor'));
         jumpToAnchor(anchor);
@@ -1016,6 +1038,57 @@ function renderAnnotationGutter() {
     }
   });
 })();
+
+function showReplyInput(annotationId, authorType, cardEl) {
+  // Remove any existing reply input
+  var existing = document.querySelector('.reply-input-area');
+  if (existing) existing.remove();
+
+  var replyArea = document.createElement('div');
+  replyArea.className = 'reply-input-area';
+  replyArea.innerHTML =
+    '<textarea class="reply-textarea" placeholder="写下回复..."></textarea>' +
+    '<div class="reply-input-actions">' +
+    '<button class="btn-cancel reply-cancel">取消</button>' +
+    '<button class="btn-primary reply-submit">回复</button>' +
+    '</div>' +
+    '<div class="hint">Ctrl+Enter 提交</div>';
+  cardEl.appendChild(replyArea);
+
+  var textarea = replyArea.querySelector('.reply-textarea');
+  setTimeout(function() { textarea.focus(); }, 30);
+
+  replyArea.querySelector('.reply-submit').addEventListener('click', function() {
+    var content = textarea.value.trim();
+    if (!content) return;
+    vscodeApi.postMessage({
+      type: 'addReply',
+      annotationId: annotationId,
+      authorType: authorType,
+      replyAuthorType: 'human',
+      content: content
+    });
+    replyArea.remove();
+  });
+  replyArea.querySelector('.reply-cancel').addEventListener('click', function() {
+    replyArea.remove();
+  });
+  textarea.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      var content = textarea.value.trim();
+      if (!content) return;
+      vscodeApi.postMessage({
+        type: 'addReply',
+        annotationId: annotationId,
+        authorType: authorType,
+        replyAuthorType: 'human',
+        content: content
+      });
+      replyArea.remove();
+    }
+    if (e.key === 'Escape') replyArea.remove();
+  });
+}
 
 function jumpToAnchor(anchor) {
   if (!editor || !editor.view) return;
@@ -1056,6 +1129,9 @@ window.addEventListener('switchToSource', function() {
 });
 window.addEventListener('createAiFile', function() {
   vscodeApi.postMessage({ type: 'createAiFile' });
+});
+window.addEventListener('createAgentGuide', function() {
+  vscodeApi.postMessage({ type: 'createAgentGuide' });
 });
 
 // ─── 通知 extension 准备就绪 ───

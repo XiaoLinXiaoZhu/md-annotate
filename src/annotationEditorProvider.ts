@@ -99,13 +99,36 @@ export class AnnotationEditorProvider implements vscode.CustomTextEditorProvider
           break;
         }
         case "removeAnnotation": {
-          await this.store.removeAnnotation(document.uri, "human", msg.id);
+          const removed = await this.store.removeAnnotation(document.uri, "human", msg.id);
+          if (!removed) {
+            await this.store.removeAnnotation(document.uri, "ai", msg.id);
+          }
           await this.sendAnnotations(webview, document.uri);
           break;
         }
         case "resolveAnnotation": {
-          await this.store.toggleResolved(document.uri, "human", msg.id);
+          // Try human file first, then AI file
+          const resolved = await this.store.toggleResolved(document.uri, "human", msg.id);
+          if (!resolved) {
+            await this.store.toggleResolved(document.uri, "ai", msg.id);
+          }
           await this.sendAnnotations(webview, document.uri);
+          break;
+        }
+
+        case "addReply": {
+          // msg.annotationId, msg.authorType (which file to look in), msg.replyAuthorType, msg.content
+          const fileAuthor = msg.authorType || "human";
+          const replyAuthor = msg.replyAuthorType || "human";
+          await this.store.addReply(
+            document.uri, fileAuthor, msg.annotationId, replyAuthor, msg.content
+          );
+          await this.sendAnnotations(webview, document.uri);
+          break;
+        }
+
+        case "createAgentGuide": {
+          await this.createAgentGuide(document.uri);
           break;
         }
 
@@ -399,6 +422,139 @@ export class AnnotationEditorProvider implements vscode.CustomTextEditorProvider
 
   // ─── HTML 生成 ───
 
+  private async createAgentGuide(docUri: vscode.Uri): Promise<void> {
+    const workspaceFolder = vscode.workspace.getWorkspaceFolder(docUri);
+    const rootDir = workspaceFolder?.uri.fsPath || path.dirname(docUri.fsPath);
+    const guidePath = path.join(rootDir, ".ai-guide.md");
+
+    if (fs.existsSync(guidePath)) {
+      vscode.window.showInformationMessage("Agent 说明书已存在");
+      const guideUri = vscode.Uri.file(guidePath);
+      await vscode.window.showTextDocument(guideUri);
+      return;
+    }
+
+    const guideContent = this.getAgentGuideTemplate();
+    fs.writeFileSync(guidePath, guideContent, "utf-8");
+    vscode.window.showInformationMessage("已创建 .ai-guide.md — Agent 使用说明书");
+    const guideUri = vscode.Uri.file(guidePath);
+    await vscode.window.showTextDocument(guideUri);
+  }
+
+  private getAgentGuideTemplate(): string {
+    return `# MD Annotate — Agent 使用说明
+
+本文档说明如何通过命令行工具（jq 等）读写批注元数据文件，供 AI Agent 协作使用。
+
+## 文件结构
+
+每个 \`.md\` 文件可有两个伴生元数据文件：
+- \`<filename>.annotations.json\` — 人类批注
+- \`<filename>.ai-annotations.json\` — AI 批注
+
+存放位置取决于配置（同目录或 \`.annotations/\` 子目录）。
+
+## JSON Schema
+
+\`\`\`json
+{
+  "version": "1.0",
+  "source": "example.md",
+  "author_type": "ai",
+  "annotations": [
+    {
+      "id": "ann_unique123",
+      "anchor": {
+        "type": "text-range",
+        "start_text": "被批注文本的前30字符",
+        "end_text": "被批注文本的后30字符",
+        "paragraph_index": 5
+      },
+      "content": "批注正文",
+      "created_at": "2025-01-01T00:00:00.000Z",
+      "updated_at": "2025-01-01T00:00:00.000Z",
+      "resolved": false,
+      "tags": ["question", "suggestion"],
+      "thread": [
+        {
+          "id": "rpl_abc123",
+          "author_type": "human",
+          "content": "回复内容",
+          "created_at": "2025-01-01T01:00:00.000Z"
+        }
+      ]
+    }
+  ]
+}
+\`\`\`
+
+## Anchor 类型
+
+| type | 字段 | 说明 |
+|------|------|------|
+| \`text-range\` | \`start_text\`, \`end_text\`, \`paragraph_index?\` | 通过文本内容定位 |
+| \`line-range\` | \`start_line\`, \`end_line\` | 通过行号定位 |
+| \`heading\` | \`heading_text\`, \`heading_level?\` | 通过标题文本定位 |
+
+## 用 jq 读取批注
+
+\`\`\`bash
+# 列出所有未解决的批注
+jq '.annotations[] | select(.resolved == false) | {id, content, anchor: .anchor.start_text}' file.ai-annotations.json
+
+# 统计批注数
+jq '.annotations | length' file.annotations.json
+
+# 查看某批注的回复线程
+jq '.annotations[] | select(.id == "ann_xxx") | .thread' file.annotations.json
+\`\`\`
+
+## 用 jq 写入批注
+
+\`\`\`bash
+# 添加一条新批注
+jq --arg id "ann_$(date +%s)" \\
+   --arg content "这里有个潜在问题" \\
+   --arg now "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \\
+   '.annotations += [{
+     id: $id,
+     anchor: {type: "heading", heading_text: "## 目标章节"},
+     content: $content,
+     created_at: $now,
+     updated_at: $now,
+     resolved: false,
+     tags: ["ai-review"],
+     thread: []
+   }]' file.ai-annotations.json > tmp && mv tmp file.ai-annotations.json
+
+# 添加回复到某条批注
+jq '(.annotations[] | select(.id == "ann_target") | .thread) += [{
+  id: "rpl_new",
+  author_type: "ai",
+  content: "我的回复",
+  created_at: "2025-01-01T00:00:00.000Z"
+}]' file.annotations.json > tmp && mv tmp file.annotations.json
+
+# 标记批注为已解决
+jq '(.annotations[] | select(.id == "ann_xxx")).resolved = true' file.ai-annotations.json > tmp && mv tmp file.ai-annotations.json
+\`\`\`
+
+## 创建新的 AI 批注文件
+
+\`\`\`bash
+echo '{"version":"1.0","source":"target.md","author_type":"ai","annotations":[]}' | jq . > target.ai-annotations.json
+\`\`\`
+
+## 最佳实践
+
+- ID 格式：\`ann_\` 或 \`rpl_\` 前缀 + 时间戳base36 + 随机后缀
+- 优先使用 \`text-range\` anchor，因为行号会随编辑变化
+- \`start_text\` 和 \`end_text\` 各取 30 字符，确保唯一定位
+- 添加批注后 VSCode 插件会自动刷新显示，无需额外操作
+- 使用 \`tags\` 字段分类：\`question\`、\`suggestion\`、\`issue\`、\`note\`
+`;
+  }
+
   private getHtml(webview: vscode.Webview, mediaBase: string, aiFileExists: boolean): string {
     const nonce = getNonce();
 
@@ -442,6 +598,9 @@ body {
   font-size: 11px;
 }
 .toolbar button:hover { background: var(--vscode-toolbar-hoverBackground); }
+.toolbar-badge { font-size: 11px; padding: 2px 6px; border-radius: 3px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
+.toolbar-badge.ai-active { background: #ab47bc30; color: #ce93d8; }
+.toolbar-sep { width: 1px; height: 16px; background: var(--vscode-panel-border); margin: 0 4px; }
 .toolbar .spacer { flex: 1; }
 .toolbar .title { color: var(--vscode-descriptionForeground); }
 
@@ -511,6 +670,32 @@ body {
   font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
+/* Thread / replies */
+.card-thread { margin-top: 6px; padding-left: 8px; border-left: 2px solid var(--vscode-panel-border); }
+.thread-reply { display: flex; gap: 4px; margin-bottom: 3px; font-size: 11px; line-height: 1.4; }
+.thread-reply .reply-author { flex-shrink: 0; }
+.thread-reply .reply-content { color: var(--vscode-foreground); opacity: 0.85; }
+.thread-reply.ai .reply-content { color: #ce93d8; }
+.card-thread-count { font-size: 10px; color: var(--vscode-descriptionForeground); margin-top: 4px; }
+
+/* Reply input */
+.reply-input-area { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--vscode-panel-border); }
+.reply-textarea {
+  width: 100%; min-height: 40px;
+  border: 1px solid var(--vscode-input-border);
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border-radius: 3px; padding: 4px 6px; font-size: 11px;
+  resize: vertical; font-family: inherit;
+}
+.reply-textarea:focus { outline: 1px solid var(--vscode-focusBorder); }
+.reply-input-actions { display: flex; justify-content: flex-end; gap: 4px; margin-top: 4px; }
+.reply-input-actions button { padding: 2px 8px; border-radius: 3px; border: none; cursor: pointer; font-size: 10px; }
+
+/* Empty gutter */
+.gutter-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 120px; text-align: center; color: var(--vscode-descriptionForeground); font-size: 12px; gap: 8px; }
+.gutter-empty-icon { font-size: 24px; opacity: 0.5; }
+
 /* 批注输入浮窗 */
 .annotation-popover {
   position: absolute;
@@ -575,9 +760,11 @@ body {
 <body class="theme-dark">
   <div class="toolbar">
     <span class="title">📝 批注模式</span>
-    ${!aiFileExists ? '<button id="btn-create-ai-file" title="创建 AI 批注文件，方便 AI agent 对此文档进行标注">🤖 创建 AI 批注</button>' : ''}
     <span class="spacer"></span>
-    <button id="btn-back-to-source">← 源码模式</button>
+    ${!aiFileExists ? '<button id="btn-create-ai-file" title="创建 AI 批注文件，允许 AI 在此文档上添加批注">＋AI 批注</button>' : '<span class="toolbar-badge ai-active" title="AI 批注文件已就绪">🤖 就绪</span>'}
+    <button id="btn-create-guide" title="创建/打开 Agent 使用说明书（.ai-guide.md）">📋 Agent 说明书</button>
+    <span class="toolbar-sep"></span>
+    <button id="btn-back-to-source">← 返回源码</button>
   </div>
   <div class="main">
     <div id="main-area">
@@ -613,6 +800,9 @@ body {
         window.dispatchEvent(new CustomEvent('createAiFile'));
       });
     }
+    document.getElementById('btn-create-guide').addEventListener('click', () => {
+      window.dispatchEvent(new CustomEvent('createAgentGuide'));
+    });
   </script>
 </body>
 </html>`;
